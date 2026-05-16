@@ -948,12 +948,35 @@ const render = (state) => {
     });
   }
 
-  // Direct click listener on the title — iOS standalone PWAs don't
-  // reliably deliver clicks on plain text to window/document-level
-  // delegated handlers. Re-bound after every render since mount()
-  // replaces the DOM.
+  // iOS Mobile Safari quirk: for non-interactive elements (plain <div> /
+  // text), `click` events are only dispatched when the element has a
+  // directly assigned onclick property OR `cursor: pointer` in CSS —
+  // and event delegation via window/document doesn't qualify. So:
+  //   - use el.onclick = fn (not addEventListener — only the property
+  //     assignment satisfies the iOS heuristic)
+  //   - .drawer-backdrop also has cursor: pointer in CSS
+  // The delegated onClick still serves all real <button> tap targets.
   const titleEl = root.querySelector('[data-tap-title]');
-  if (titleEl) titleEl.addEventListener('click', onTitleTap);
+  if (titleEl) titleEl.onclick = onTitleTap;
+  const motivEl = root.querySelector('.motivation');
+  if (motivEl) motivEl.onclick = () => go('#/');
+  root.querySelectorAll('.drawer-backdrop').forEach((bd) => {
+    bd.onclick = () => {
+      if (bd.hasAttribute('data-close-menu')) {
+        menuOpen = false;
+        render(store.state);
+      } else if (bd.hasAttribute('data-cancel-new-routine')) {
+        newRoutineOpen = false;
+        render(store.state);
+      } else if (bd.hasAttribute('data-close-drawer')) {
+        const route = parseRoute();
+        if (route.name === 'workout' && route.editExerciseId) {
+          if (history.length > 1) history.back();
+          else go(`#/workout/${route.routineId}`);
+        }
+      }
+    };
+  });
 };
 
 // ---------- Export / Import ----------

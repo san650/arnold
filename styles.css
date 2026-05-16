@@ -725,6 +725,9 @@ button.video-link { font: inherit; font-weight: 600; font-size: 0.85rem; }
   animation: drawer-fade 0.18s ease;
   -webkit-backdrop-filter: blur(4px);
   backdrop-filter: blur(4px);
+  /* Required so iOS standalone PWA actually fires click events on this
+     <div>. The .motivation rule already has it. */
+  cursor: pointer;
 }
 .drawer {
   position: fixed;
