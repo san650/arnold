@@ -1,13 +1,13 @@
 {
   "name": "Arnold",
   "short_name": "Arnold",
-  "description": "Registro de entrenamiento de gimnasio",
+  "description": "Diario de entrenamiento de hierro",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#1F2937",
-  "theme_color": "#1F2937",
+  "background_color": "#0e1014",
+  "theme_color": "#0e1014",
   "lang": "es",
   "icons": [
     {

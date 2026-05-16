@@ -21,6 +21,20 @@ const safeUrl = (raw) => {
   return '';
 };
 
+const YT_ID = /(?:youtube\.com\/(?:watch\?v=|shorts\/|embed\/)|youtu\.be\/)([\w-]{6,})/i;
+const IMG_EXT = /\.(jpe?g|png|gif|webp|svg|avif)(?:\?|#|$)/i;
+
+const parseMedia = (url) => {
+  if (!url) return null;
+  const m = url.match(YT_ID);
+  if (m) return { kind: 'youtube', id: m[1], short: /youtube\.com\/shorts\//i.test(url), url };
+  if (IMG_EXT.test(url)) return { kind: 'image', url };
+  return { kind: 'link', url };
+};
+
+// Transient: which exercises have their media expanded. Not persisted.
+const expandedMedia = new Set();
+
 const mount = (htmlString) => {
   const range = document.createRange();
   range.selectNodeContents(root);
@@ -28,6 +42,47 @@ const mount = (htmlString) => {
   range.setStart(root, 0);
   const frag = range.createContextualFragment(htmlString);
   root.appendChild(frag);
+};
+
+// Tracks whether the drawer was already open in the previous render so
+// subsequent re-renders (auto-saves) don't replay the slide-up animation.
+let lastDrawerOpen = false;
+
+// Focus + drawer-scroll preservation across full re-renders. Without this,
+// every per-field change in the drawer would blow away focus + the soft
+// keyboard. We re-target the same element by its semantic data attributes.
+const captureUIState = () => {
+  const a = document.activeElement;
+  const drawer = root.querySelector('.drawer');
+  const scroll = drawer ? drawer.scrollTop : 0;
+  if (!a || a === document.body || a === document.documentElement) {
+    return { selector: null, scroll };
+  }
+  const tag = a.tagName.toLowerCase();
+  const parts = [tag];
+  const ds = a.dataset || {};
+  if (a.name) parts.push(`[name="${CSS.escape(a.name)}"]`);
+  if (ds.routine) parts.push(`[data-routine="${CSS.escape(ds.routine)}"]`);
+  if (ds.exercise) parts.push(`[data-exercise="${CSS.escape(ds.exercise)}"]`);
+  if (a.hasAttribute('data-weight-value')) parts.push('[data-weight-value]');
+  if (a.hasAttribute('data-weight-unit')) parts.push('[data-weight-unit]');
+  if (a.hasAttribute('data-rename-routine')) parts.push('[data-rename-routine]');
+  const selector = parts.length > 1 ? parts.join('') : null;
+  const selectionStart = typeof a.selectionStart === 'number' ? a.selectionStart : null;
+  const selectionEnd = typeof a.selectionEnd === 'number' ? a.selectionEnd : null;
+  return { selector, selectionStart, selectionEnd, scroll };
+};
+
+const restoreUIState = (info) => {
+  const drawer = root.querySelector('.drawer');
+  if (drawer && info.scroll) drawer.scrollTop = info.scroll;
+  if (!info.selector) return;
+  const el = root.querySelector(info.selector);
+  if (!el) return;
+  el.focus({ preventScroll: true });
+  if (info.selectionStart != null && el.setSelectionRange) {
+    try { el.setSelectionRange(info.selectionStart, info.selectionEnd); } catch {}
+  }
 };
 
 // ---------- helpers ----------
@@ -68,7 +123,11 @@ const parseRoute = () => {
   const h = location.hash.replace(/^#\/?/, '');
   if (!h) return { name: 'home' };
   const parts = h.split('/');
-  if (parts[0] === 'workout' && parts[1]) return { name: 'workout', routineId: parts[1] };
+  if (parts[0] === 'workout' && parts[1]) {
+    const r = { name: 'workout', routineId: parts[1] };
+    if (parts[2] === 'edit' && parts[3]) r.editExerciseId = parts[3];
+    return r;
+  }
   if (parts[0] === 'edit' && parts[1]) return { name: 'edit-routine', routineId: parts[1] };
   if (parts[0] === 'edit') return { name: 'edit' };
   return { name: 'home' };
@@ -78,55 +137,108 @@ const go = (path) => { location.hash = path; };
 
 // ---------- views ----------
 
-const undoBar = (state) => `
-  <div class="actions">
-    <button class="icon-btn" data-undo title="Deshacer" aria-label="Deshacer" ${state._undo ? '' : 'disabled'}>↶</button>
-    <button class="icon-btn" data-redo title="Rehacer" aria-label="Rehacer" ${state._redo ? '' : 'disabled'}>↷</button>
-  </div>
+// Fixed bottom action bar rendered on every view. Left: undo/redo.
+// Right: contextual primary action (Editar on home, Listo on edit, etc).
+const bottomBar = (state, primary = '') => `
+  <nav class="bottom-bar">
+    <div class="bottom-bar-inner">
+      <div class="group">
+        <button class="icon-btn" data-undo aria-label="Deshacer" ${state._undo ? '' : 'disabled'}>↶</button>
+        <button class="icon-btn" data-redo aria-label="Rehacer" ${state._redo ? '' : 'disabled'}>↷</button>
+      </div>
+      <div class="group">${primary}</div>
+    </div>
+  </nav>
 `;
+
+const doneBtn = '<button class="icon-btn primary" data-done>Listo</button>';
+const editBtn = '<button class="icon-btn primary" data-go="#/edit">Editar</button>';
+
+// Square brand badge — amber barbell on charcoal
+const logoSvg = `
+<svg class="app-logo" viewBox="0 0 40 40" aria-hidden="true">
+  <rect width="40" height="40" rx="6" fill="transparent"/>
+  <g fill="#ffffff">
+    <rect x="4" y="17" width="3" height="6" rx="0.5"/>
+    <rect x="8" y="13" width="3" height="14" rx="0.5"/>
+    <rect x="13" y="18" width="14" height="4"/>
+    <rect x="29" y="13" width="3" height="14" rx="0.5"/>
+    <rect x="33" y="17" width="3" height="6" rx="0.5"/>
+  </g>
+</svg>`;
+
+const DAY_WORDS = ['Uno', 'Dos', 'Tres', 'Cuatro', 'Cinco', 'Seis', 'Siete', 'Ocho', 'Nueve', 'Diez', 'Once', 'Doce'];
+const ROMAN = ['I','II','III','IV','V','VI','VII','VIII','IX','X','XI','XII','XIII','XIV','XV','XVI','XVII','XVIII','XIX','XX'];
+const dayWord = (i) => DAY_WORDS[i] ?? String(i + 1);
+const roman = (n) => ROMAN[n - 1] ?? String(n);
+const dayNum = (i) => String(i + 1).padStart(2, '0');
+const displayName = (raw) => {
+  const idx = raw.indexOf(':');
+  return (idx >= 0 ? raw.slice(idx + 1).trim() : raw);
+};
 
 const renderHome = (state) => {
   const date = todayKey();
-  const cards = state.doc.routines.map((r) => {
+
+  // The routine with the most progress today gets highlighted as "active".
+  let activeId = null;
+  let activeDone = 0;
+  for (const r of state.doc.routines) {
+    const { done } = countDoneFor(state, date, r);
+    if (done > activeDone) { activeDone = done; activeId = r.id; }
+  }
+
+  const items = state.doc.routines.map((r, i) => {
     const { total, done } = countDoneFor(state, date, r);
+    const isRest = r.exercises.length === 0;
     const pct = total > 0 ? Math.round((done / total) * 100) : 0;
-    const count = r.exercises.length;
-    const sub = count === 0
-      ? 'Sin ejercicios'
-      : `${count} ${count === 1 ? 'ejercicio' : 'ejercicios'}`;
+    const active = r.id === activeId && done > 0;
+    const meta = isRest
+      ? `<span class="num small muted">Día de descanso</span>`
+      : `
+        <div class="progress-bar" aria-hidden="true"><div style="width:${pct}%"></div></div>
+        <span class="progress-num">${String(done).padStart(2, '0')} / ${String(total).padStart(2, '0')}</span>
+      `;
     return `
-      <button class="routine-card" data-go="#/workout/${esc(r.id)}">
-        <div class="title">${esc(r.name)}</div>
-        <div class="subtitle">${esc(sub)}</div>
-        <div class="meta">
-          <div class="progress" aria-hidden="true"><div style="width:${pct}%"></div></div>
-          <div>${done}/${total}</div>
+      <button class="routine-card ${isRest ? 'rest' : ''} ${active ? 'active' : ''}" data-go="#/workout/${esc(r.id)}">
+        <div class="rc-row1">
+          <span class="rc-badge">${dayNum(i)}</span>
+          <div class="rc-title">
+            <span class="rc-eyebrow">Día ${esc(dayWord(i))}</span>
+            ${esc(displayName(r.name))}
+          </div>
+          <span class="rc-chev" aria-hidden="true">›</span>
         </div>
+        <div class="rc-row2">${meta}</div>
       </button>`;
   }).join('');
 
   return `
-    <header class="header">
-      <h1>Arnold</h1>
-      ${undoBar(state)}
+    <header class="app-bar">
+      <div class="app-bar-left">
+        ${logoSvg}
+        <h1 class="app-title">Arnold</h1>
+      </div>
     </header>
-    <div class="today">${esc(fmtTodayLabel())}</div>
-    <div class="routine-list">${cards}</div>
-    <div class="bottom-action">
-      <button data-go="#/edit">Editar rutinas</button>
+    <div class="section">
+      <span class="label">Rutinas</span>
+      <span class="count">${String(state.doc.routines.length).padStart(2, '0')}</span>
     </div>
+    <div class="routine-list">${items}</div>
+    ${bottomBar(state, editBtn)}
   `;
 };
 
-const renderWorkout = (state, routineId) => {
+const renderWorkout = (state, routineId, editExerciseId) => {
   const routine = state.doc.routines.find((r) => r.id === routineId);
   if (!routine) return renderHome(state);
   const date = todayKey();
 
   const items = routine.exercises.length === 0
-    ? `<div class="rest-card">Sin ejercicios programados.<br/>Buen momento para descansar o hacer cardio.</div>`
+    ? `<div class="rest-card">Día de descanso. Recupera, hidrata, vuelve más fuerte.</div>`
     : routine.exercises.map((ex) => {
         const arr = sessionFor(state, date, ex.id);
+        const doneCount = arr.slice(0, ex.sets).filter(Boolean).length;
         const sets = Array.from({ length: ex.sets }, (_, i) => {
           const done = !!arr[i];
           return `<button class="set-btn ${done ? 'done' : ''}"
@@ -135,85 +247,194 @@ const renderWorkout = (state, routineId) => {
                           data-index="${i}"
                           data-from="${done ? '1' : '0'}"
                           aria-pressed="${done}"
-                          aria-label="Serie ${i + 1}">${i + 1}</button>`;
+                          aria-label="Serie ${i + 1}">
+                    <span class="lbl">Serie</span>
+                    <span class="n">${i + 1}</span>
+                  </button>`;
         }).join('');
 
-        const weightLabel = ex.weight ? `${esc(ex.weight.value)} ${esc(ex.weight.unit)}` : '—';
-        const w = ex.weight ?? { value: '', unit: 'kg' };
-        const weightInput = `
+        const weightChip = ex.weight
+          ? `<span class="stat-chip weight"><span class="k">Peso</span> ${esc(ex.weight.value)} ${esc(ex.weight.unit)}</span>`
+          : '';
+
+        const url = safeUrl(ex.video);
+        const media = parseMedia(url);
+        let video = '';
+        if (media) {
+          if (media.kind === 'link') {
+            video = `<a class="video-link" href="${esc(media.url)}" target="_blank" rel="noopener noreferrer">Abrir enlace</a>`;
+          } else {
+            const open = expandedMedia.has(ex.id);
+            const label = media.kind === 'image'
+              ? (open ? 'Ocultar imagen' : 'Ver imagen')
+              : (open ? 'Ocultar video' : 'Ver video');
+            const embed = open ? renderMedia(media) : '';
+            video = `
+              <button class="video-link" data-toggle-media data-exercise="${esc(ex.id)}" aria-expanded="${open}">${label}</button>
+              ${embed}
+            `;
+          }
+        }
+
+        const notes = ex.notes ? `<p class="ex-notes">${esc(ex.notes)}</p>` : '';
+        const complete = doneCount === ex.sets && ex.sets > 0;
+
+        return `
+          <article class="exercise ${complete ? 'complete' : ''}">
+            <div class="ex-head">
+              <h3>${esc(ex.name)}</h3>
+              <button class="ex-edit"
+                      data-edit-exercise
+                      data-routine="${esc(routine.id)}"
+                      data-exercise="${esc(ex.id)}"
+                      aria-label="Editar ejercicio">✎</button>
+            </div>
+            ${notes}
+            <div class="ex-stats">
+              <span class="stat-chip"><span class="k">Series</span> ${ex.sets}</span>
+              <span class="stat-chip"><span class="k">Reps</span> ${esc(ex.reps)}</span>
+              ${weightChip}
+            </div>
+            <div class="sets">${sets}</div>
+            ${video}
+          </article>
+        `;
+      }).join('');
+
+  const { total, done } = countDoneFor(state, date, routine);
+
+  const drawer = editExerciseId
+    ? renderDrawer(routine, routine.exercises.find((e) => e.id === editExerciseId))
+    : '';
+
+  const idx = state.doc.routines.findIndex((x) => x.id === routine.id);
+  const num = idx >= 0 ? idx : 0;
+  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+
+  return `
+    <header class="workout-bar">
+      <button class="back" data-go="#/" aria-label="Volver">‹ Inicio</button>
+      <div class="title-block">
+        <div class="title">${esc(displayName(routine.name))}</div>
+        <div class="sub">Día ${dayNum(num)} · ${String(done).padStart(2, '0')} / ${String(total).padStart(2, '0')} series</div>
+      </div>
+      <span></span>
+    </header>
+    <div class="workout-progress" aria-hidden="true"><div style="width:${pct}%"></div></div>
+    ${items}
+    ${routine.exercises.length > 0 ? `
+      <div class="bottom-action">
+        <button class="ghost" data-clear-sets data-date="${esc(date)}">Reiniciar checklist</button>
+      </div>
+    ` : ''}
+    ${drawer}
+    ${bottomBar(state)}
+  `;
+};
+
+const renderMedia = (media) => {
+  if (media.kind === 'youtube') {
+    const cls = media.short ? 'media-wrap short' : 'media-wrap';
+    const src = `https://www.youtube.com/embed/${esc(media.id)}`;
+    return `<div class="${cls}"><iframe src="${src}" title="YouTube" allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen loading="lazy"></iframe></div>`;
+  }
+  if (media.kind === 'image') {
+    return `<div class="media-wrap"><img src="${esc(media.url)}" alt="" loading="lazy" /></div>`;
+  }
+  return '';
+};
+
+const renderDrawer = (routine, ex) => {
+  if (!ex) return '';
+  const w = ex.weight ?? { value: '', unit: 'kg' };
+  return `
+    <div class="drawer-backdrop" data-close-drawer></div>
+    <aside class="drawer" role="dialog" aria-modal="true" aria-label="Editar ejercicio">
+      <div class="drawer-handle" aria-hidden="true"></div>
+      <div class="drawer-header">
+        <h3>Editar ejercicio</h3>
+        <button class="icon-btn" data-close-drawer aria-label="Cerrar">✕</button>
+      </div>
+      <div class="drawer-body">
+        <div class="field">
+          <label>Nombre</label>
+          <input type="text" data-update name="name" value="${esc(ex.name)}"
+                 data-routine="${esc(routine.id)}" data-exercise="${esc(ex.id)}" />
+        </div>
+        <div class="row">
+          <div class="field" style="flex:1">
+            <label>Series</label>
+            <input type="number" min="1" max="20" inputmode="numeric"
+                   data-update name="sets" value="${ex.sets}"
+                   data-routine="${esc(routine.id)}" data-exercise="${esc(ex.id)}" />
+          </div>
+          <div class="field" style="flex:2">
+            <label>Reps</label>
+            <input type="text" data-update name="reps" value="${esc(ex.reps)}"
+                   data-routine="${esc(routine.id)}" data-exercise="${esc(ex.id)}" />
+          </div>
+        </div>
+        <div class="field">
+          <label>Peso</label>
           <div class="row weight-row">
-            <span class="muted small">Peso:</span>
             <input type="number" inputmode="decimal" step="0.5"
                    data-weight-value
                    data-routine="${esc(routine.id)}"
                    data-exercise="${esc(ex.id)}"
                    value="${esc(w.value)}"
-                   placeholder="0" />
+                   placeholder="0" style="flex:1" />
             <select data-weight-unit
                     data-routine="${esc(routine.id)}"
                     data-exercise="${esc(ex.id)}">
               <option value="kg" ${w.unit === 'kg' ? 'selected' : ''}>kg</option>
               <option value="lb" ${w.unit === 'lb' ? 'selected' : ''}>lb</option>
             </select>
-            <span class="muted small right">${weightLabel}</span>
           </div>
-        `;
-
-        const url = safeUrl(ex.video);
-        const video = url
-          ? `<a class="video-link" href="${esc(url)}" target="_blank" rel="noopener noreferrer">▶ Ver video</a>`
-          : '';
-
-        const notes = ex.notes ? `<p class="notes">${esc(ex.notes)}</p>` : '';
-
-        return `
-          <div class="exercise">
-            <h3>${esc(ex.name)}</h3>
-            ${notes}
-            <div class="target">${ex.sets} × ${esc(ex.reps)}</div>
-            <div class="sets">${sets}</div>
-            ${weightInput}
-            ${video}
-          </div>
-        `;
-      }).join('');
-
-  const { total, done } = countDoneFor(state, date, routine);
-
-  return `
-    <header class="header">
-      <div class="back-row" style="margin:0">
-        <button class="back-btn" data-go="#/">← Inicio</button>
+        </div>
+        <div class="field">
+          <label>Video (URL)</label>
+          <input type="text" data-update name="video" value="${esc(ex.video ?? '')}"
+                 data-routine="${esc(routine.id)}" data-exercise="${esc(ex.id)}"
+                 placeholder="https://youtu.be/..." />
+        </div>
+        <div class="field">
+          <label>Notas</label>
+          <input type="text" data-update name="notes" value="${esc(ex.notes ?? '')}"
+                 data-routine="${esc(routine.id)}" data-exercise="${esc(ex.id)}" />
+        </div>
+        <div class="bottom-action">
+          <button class="primary" data-close-drawer>Listo</button>
+        </div>
       </div>
-      ${undoBar(state)}
-    </header>
-    <h2 class="workout-title">${esc(routine.name)}</h2>
-    <p class="workout-sub">${esc(fmtTodayLabel())} · ${done}/${total} series</p>
-    ${items}
-    ${routine.exercises.length > 0 ? `
-      <div class="bottom-action">
-        <button data-clear-sets data-date="${esc(date)}">Reiniciar checklist de hoy</button>
-      </div>
-    ` : ''}
+    </aside>
   `;
 };
 
 const renderEdit = (state) => {
-  const items = state.doc.routines.map((r) => `
+  const items = state.doc.routines.map((r, i) => `
     <button class="routine-card" data-go="#/edit/${esc(r.id)}">
-      <div class="title">${esc(r.name)}</div>
-      <div class="subtitle">${r.exercises.length} ejercicios</div>
+      <div class="rc-row1">
+        <span class="rc-badge">${dayNum(i)}</span>
+        <div class="rc-title">
+          <span class="rc-eyebrow">Día ${esc(dayWord(i))}</span>
+          ${esc(displayName(r.name))}
+        </div>
+        <span class="rc-chev" aria-hidden="true">›</span>
+      </div>
+      <div class="rc-row2"><span class="num small muted">${String(r.exercises.length).padStart(2, '0')} ejercicios</span></div>
     </button>
   `).join('');
 
   return `
-    <header class="header">
-      <div class="back-row" style="margin:0">
-        <button class="back-btn" data-go="#/">← Inicio</button>
+    <header class="app-bar">
+      <div class="app-bar-left">
+        <button class="back" data-go="#/" aria-label="Volver" style="background:transparent;border:0;color:var(--fg);font-family:var(--display);font-weight:700;font-size:0.95rem;padding:0.5rem 0.5rem 0.5rem 0;min-height:40px">‹ Inicio</button>
       </div>
-      ${undoBar(state)}
     </header>
-    <h2 class="workout-title">Editar rutinas</h2>
+    <div class="section">
+      <span class="label">Editar rutinas</span>
+      <span class="count">${String(state.doc.routines.length).padStart(2, '0')}</span>
+    </div>
     <div class="routine-list">${items}</div>
     <div class="bottom-action">
       <button class="primary" data-add-routine>+ Nueva rutina</button>
@@ -221,6 +442,7 @@ const renderEdit = (state) => {
     <div class="bottom-action">
       <button class="danger" data-reset>Restaurar rutina inicial</button>
     </div>
+    ${bottomBar(state, doneBtn)}
   `;
 };
 
@@ -265,18 +487,25 @@ const renderEditRoutine = (state, routineId) => {
     </div>
   `).join('');
 
+  const idx = state.doc.routines.findIndex((x) => x.id === r.id);
+  const num = idx >= 0 ? idx : 0;
   return `
-    <header class="header">
-      <div class="back-row" style="margin:0">
-        <button class="back-btn" data-go="#/edit">← Rutinas</button>
+    <header class="workout-bar">
+      <button class="back" data-go="#/edit" aria-label="Volver">‹ Rutinas</button>
+      <div class="title-block">
+        <div class="title">${esc(displayName(r.name))}</div>
+        <div class="sub">Día ${dayNum(num)} · ${String(r.exercises.length).padStart(2, '0')} ejercicios</div>
       </div>
-      ${undoBar(state)}
+      <span></span>
     </header>
     <div class="field">
       <label>Nombre de la rutina</label>
       <input type="text" data-rename-routine data-routine="${esc(r.id)}" value="${esc(r.name)}" />
     </div>
-    <div class="section-title">Ejercicios</div>
+    <div class="section">
+      <span class="label">Ejercicios</span>
+      <span class="count">${String(r.exercises.length).padStart(2, '0')}</span>
+    </div>
     ${rows || '<p class="muted small">Sin ejercicios.</p>'}
     <div class="bottom-action">
       <button class="primary" data-add-exercise data-routine="${esc(r.id)}">+ Agregar ejercicio</button>
@@ -284,6 +513,7 @@ const renderEditRoutine = (state, routineId) => {
     <div class="bottom-action">
       <button class="danger" data-remove-routine data-routine="${esc(r.id)}">Eliminar rutina</button>
     </div>
+    ${bottomBar(state, doneBtn)}
   `;
 };
 
@@ -295,21 +525,54 @@ const render = (state) => {
 
   const route = parseRoute();
   let html;
-  if (route.name === 'workout') html = renderWorkout(state, route.routineId);
+  if (route.name === 'workout') html = renderWorkout(state, route.routineId, route.editExerciseId);
   else if (route.name === 'edit') html = renderEdit(state);
   else if (route.name === 'edit-routine') html = renderEditRoutine(state, route.routineId);
   else html = renderHome(state);
+
+  const drawerOpen = route.name === 'workout' && !!route.editExerciseId;
+  const suppressDrawerAnim = drawerOpen && lastDrawerOpen;
+
+  const ui = captureUIState();
   mount(html);
+  if (suppressDrawerAnim) {
+    const drawer = root.querySelector('.drawer');
+    const backdrop = root.querySelector('.drawer-backdrop');
+    if (drawer) drawer.classList.add('no-anim');
+    if (backdrop) backdrop.classList.add('no-anim');
+  }
+  restoreUIState(ui);
+
+  if (drawerOpen) document.body.setAttribute('data-drawer-open', '');
+  else document.body.removeAttribute('data-drawer-open');
+  lastDrawerOpen = drawerOpen;
 };
 
 // ---------- event delegation ----------
 
 const onClick = (e) => {
-  const t = e.target.closest('[data-go],[data-undo],[data-redo],[data-toggle-set],[data-clear-sets],[data-add-routine],[data-add-exercise],[data-remove-exercise],[data-remove-routine],[data-reset]');
+  const t = e.target.closest('[data-go],[data-done],[data-undo],[data-redo],[data-toggle-set],[data-toggle-media],[data-clear-sets],[data-add-routine],[data-add-exercise],[data-remove-exercise],[data-remove-routine],[data-reset],[data-edit-exercise],[data-close-drawer]');
   if (!t) return;
 
   if (t.hasAttribute('data-go')) {
     go(t.getAttribute('data-go'));
+    return;
+  }
+  if (t.hasAttribute('data-done')) {
+    go('#/');
+    return;
+  }
+  if (t.hasAttribute('data-edit-exercise')) {
+    const routineId = t.dataset.routine;
+    const exerciseId = t.dataset.exercise;
+    go(`#/workout/${routineId}/edit/${exerciseId}`);
+    return;
+  }
+  if (t.hasAttribute('data-close-drawer')) {
+    const route = parseRoute();
+    if (route.name === 'workout' && route.editExerciseId) {
+      go(`#/workout/${route.routineId}`);
+    }
     return;
   }
   if (t.hasAttribute('data-undo')) {
@@ -318,6 +581,13 @@ const onClick = (e) => {
   }
   if (t.hasAttribute('data-redo')) {
     store.redo();
+    return;
+  }
+  if (t.hasAttribute('data-toggle-media')) {
+    const id = t.dataset.exercise;
+    if (expandedMedia.has(id)) expandedMedia.delete(id);
+    else expandedMedia.add(id);
+    render(store.state);
     return;
   }
   if (t.hasAttribute('data-toggle-set')) {

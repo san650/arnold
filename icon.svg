@@ -1,11 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
-  <rect width="200" height="200" fill="#1F2937"/>
-  <!-- Outer plates -->
-  <rect x="22" y="78" width="16" height="44" rx="3" fill="#F3F4F6"/>
-  <rect x="162" y="78" width="16" height="44" rx="3" fill="#F3F4F6"/>
-  <!-- Inner plates -->
-  <rect x="44" y="64" width="20" height="72" rx="4" fill="#F3F4F6"/>
-  <rect x="136" y="64" width="20" height="72" rx="4" fill="#F3F4F6"/>
-  <!-- Bar -->
-  <rect x="38" y="94" width="124" height="12" rx="2" fill="#F59E0B"/>
+  <rect width="200" height="200" fill="#0e1014"/>
+  <g fill="#ff6b1a">
+    <rect x="20" y="80" width="18" height="40" rx="3"/>
+    <rect x="44" y="60" width="20" height="80" rx="3"/>
+    <rect x="70" y="92" width="60" height="16"/>
+    <rect x="136" y="60" width="20" height="80" rx="3"/>
+    <rect x="162" y="80" width="18" height="40" rx="3"/>
+  </g>
 </svg>
