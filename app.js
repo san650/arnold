@@ -958,6 +958,14 @@ const render = (state) => {
       store.dispatch(makeCommand('MOVE_ROUTINE', { from, to }));
     });
   }
+
+  // Triple-tap easter egg: direct click listener on the title. iOS
+  // standalone PWAs don't reliably deliver click events on plain text
+  // to window/document-level delegated handlers, but a direct listener
+  // on the element itself works. Re-bound after every render since
+  // mount() replaces the DOM.
+  const titleEl = root.querySelector('[data-tap-title]');
+  if (titleEl) titleEl.addEventListener('click', onTitleTap);
 };
 
 // ---------- Export / Import ----------
@@ -1056,13 +1064,9 @@ const importConfig = async () => {
 // ---------- event delegation ----------
 
 const onClick = async (e) => {
-  const t = e.target.closest('[data-go],[data-done],[data-undo],[data-redo],[data-toggle-set],[data-toggle-media],[data-clear-sets],[data-add-routine],[data-add-exercise],[data-remove-exercise],[data-remove-routine],[data-reset],[data-edit-exercise],[data-close-drawer],[data-tap-title],[data-menu],[data-close-menu],[data-export],[data-import],[data-cancel-new-routine]');
+  const t = e.target.closest('[data-go],[data-done],[data-undo],[data-redo],[data-toggle-set],[data-toggle-media],[data-clear-sets],[data-add-routine],[data-add-exercise],[data-remove-exercise],[data-remove-routine],[data-reset],[data-edit-exercise],[data-close-drawer],[data-menu],[data-close-menu],[data-export],[data-import],[data-cancel-new-routine]');
   if (!t) return;
 
-  if (t.hasAttribute('data-tap-title')) {
-    onTitleTap();
-    return;
-  }
   if (t.hasAttribute('data-go')) {
     go(t.getAttribute('data-go'));
     return;
