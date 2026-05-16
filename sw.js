@@ -1,4 +1,4 @@
-const CACHE = 'arnold-v8';
+const CACHE = 'arnold-v9';
 
 const SHELL = [
   './',

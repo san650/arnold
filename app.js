@@ -126,19 +126,8 @@ const attachReorder = (container, onReorder) => {
   container.addEventListener('pointerdown', onPointerDown);
 };
 
-// Easter-egg: 3 taps on the title within 600ms opens the motivation screen.
-let titleTaps = 0;
-let titleTapTimer = null;
-const onTitleTap = () => {
-  titleTaps++;
-  if (titleTapTimer) clearTimeout(titleTapTimer);
-  if (titleTaps >= 3) {
-    titleTaps = 0;
-    go('#/motivation');
-    return;
-  }
-  titleTapTimer = setTimeout(() => { titleTaps = 0; }, 600);
-};
+// Tap the title to open the daily motivation screen.
+const onTitleTap = () => go('#/motivation');
 
 // In-app confirmation modal. Replaces window.confirm() with a styled
 // dialog. Returns a Promise<boolean> — true on confirm, false on cancel.
@@ -959,11 +948,10 @@ const render = (state) => {
     });
   }
 
-  // Triple-tap easter egg: direct click listener on the title. iOS
-  // standalone PWAs don't reliably deliver click events on plain text
-  // to window/document-level delegated handlers, but a direct listener
-  // on the element itself works. Re-bound after every render since
-  // mount() replaces the DOM.
+  // Direct click listener on the title — iOS standalone PWAs don't
+  // reliably deliver clicks on plain text to window/document-level
+  // delegated handlers. Re-bound after every render since mount()
+  // replaces the DOM.
   const titleEl = root.querySelector('[data-tap-title]');
   if (titleEl) titleEl.addEventListener('click', onTitleTap);
 };
