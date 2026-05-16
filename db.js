@@ -2,6 +2,7 @@ const DB_NAME = 'arnold';
 const DB_VERSION = 1;
 const STORE = 'state';
 const DOC_KEY = 'app';
+const QUOTES_KEY = 'quotes';
 
 let dbPromise = null;
 
@@ -37,6 +38,26 @@ export const saveState = async (state) => {
   const s = await tx('readwrite');
   return new Promise((res, rej) => {
     const r = s.put(state, DOC_KEY);
+    r.onsuccess = () => res();
+    r.onerror = () => rej(r.error);
+  });
+};
+
+// Cached quotes — separate object-store entry so app state and quote cache
+// are independent. Shape: { raw: string, quotes: string[] }.
+export const loadQuotes = async () => {
+  const s = await tx('readonly');
+  return new Promise((res, rej) => {
+    const r = s.get(QUOTES_KEY);
+    r.onsuccess = () => res(r.result ?? null);
+    r.onerror = () => rej(r.error);
+  });
+};
+
+export const saveQuotes = async (payload) => {
+  const s = await tx('readwrite');
+  return new Promise((res, rej) => {
+    const r = s.put(payload, QUOTES_KEY);
     r.onsuccess = () => res();
     r.onerror = () => rej(r.error);
   });

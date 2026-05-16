@@ -1,4 +1,4 @@
-const CACHE = 'arnold-v4';
+const CACHE = 'arnold-v6';
 
 const SHELL = [
   './',
@@ -11,6 +11,7 @@ const SHELL = [
   './store.js',
   './db.js',
   './seed.js',
+  './quotes.json',
   './icon.svg',
   './assets/arnold.jpg',
   './splash/splash-1290x2796.png',
