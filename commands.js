@@ -124,6 +124,19 @@ export const COMMANDS = {
     },
     coalesceKey: (p) => `rm-r:${p.routine.id}`,
   },
+
+  MOVE_ROUTINE: {
+    apply: (s, p) => {
+      const [moved] = s.doc.routines.splice(p.from, 1);
+      s.doc.routines.splice(p.to, 0, moved);
+    },
+    revert: (s, p) => {
+      const [moved] = s.doc.routines.splice(p.to, 1);
+      s.doc.routines.splice(p.from, 0, moved);
+    },
+    // Each move is its own undo step (no coalescing across rapid taps).
+    coalesceKey: () => 'move',
+  },
 };
 
 export const makeCommand = (type, payload) => ({ type, payload });

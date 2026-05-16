@@ -45,6 +45,87 @@ const mount = (htmlString) => {
   root.appendChild(frag);
 };
 
+// Pointer-based drag-and-drop sort for [data-reorder-list]. Each row is
+// [data-reorder-index="N"] with a [data-drag-handle] child. While dragging
+// the picked-up row floats with the pointer; the other rows shift via
+// CSS transitions to make room. Calls onReorder(from, to) at drop time.
+const attachReorder = (container, onReorder) => {
+  let dragging = null;
+  let rows = [];
+  let dragFromIndex = -1;
+  let dragToIndex = -1;
+  let rowOriginTops = [];
+  let pointerStartY = 0;
+
+  const onPointerDown = (e) => {
+    const handle = e.target.closest('[data-drag-handle]');
+    if (!handle) return;
+    const row = handle.closest('[data-reorder-index]');
+    if (!row) return;
+    if (e.button !== undefined && e.button !== 0) return;
+    e.preventDefault();
+
+    rows = [...container.querySelectorAll('[data-reorder-index]')];
+    rowOriginTops = rows.map((r) => r.getBoundingClientRect().top);
+    dragFromIndex = rows.indexOf(row);
+    dragToIndex = dragFromIndex;
+    pointerStartY = e.clientY;
+    dragging = row;
+
+    row.setPointerCapture?.(e.pointerId);
+    row.classList.add('dragging');
+    container.classList.add('reordering');
+
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp, { once: true });
+    window.addEventListener('pointercancel', onPointerUp, { once: true });
+  };
+
+  const onPointerMove = (e) => {
+    if (!dragging) return;
+    const delta = e.clientY - pointerStartY;
+    dragging.style.transform = `translateY(${delta}px)`;
+
+    // Find which slot the pointer is currently over.
+    const draggingHeight = dragging.offsetHeight;
+    const pointerCenter = e.clientY;
+    let newIndex = dragFromIndex;
+    for (let i = 0; i < rows.length; i++) {
+      if (i === dragFromIndex) continue;
+      const top = rowOriginTops[i];
+      const midpoint = top + draggingHeight / 2;
+      if (i < dragFromIndex && pointerCenter < midpoint) { newIndex = i; break; }
+      if (i > dragFromIndex && pointerCenter > midpoint) { newIndex = i; }
+    }
+
+    if (newIndex !== dragToIndex) {
+      dragToIndex = newIndex;
+      rows.forEach((r, i) => {
+        if (i === dragFromIndex) return;
+        let shift = 0;
+        if (dragFromIndex < dragToIndex && i > dragFromIndex && i <= dragToIndex) shift = -draggingHeight - 8; // includes row gap
+        if (dragFromIndex > dragToIndex && i < dragFromIndex && i >= dragToIndex) shift = draggingHeight + 8;
+        r.style.transform = shift ? `translateY(${shift}px)` : '';
+      });
+    }
+  };
+
+  const onPointerUp = () => {
+    window.removeEventListener('pointermove', onPointerMove);
+    if (!dragging) return;
+    rows.forEach((r) => { r.style.transform = ''; });
+    dragging.classList.remove('dragging');
+    container.classList.remove('reordering');
+    const from = dragFromIndex;
+    const to = dragToIndex;
+    dragging = null;
+    rows = [];
+    if (from !== to && from >= 0 && to >= 0) onReorder(from, to);
+  };
+
+  container.addEventListener('pointerdown', onPointerDown);
+};
+
 // Easter-egg: 3 taps on the title within 600ms opens the motivation screen.
 let titleTaps = 0;
 let titleTapTimer = null;
@@ -122,6 +203,8 @@ let lastRouteKey = null;
 
 // Transient: bottom kebab menu open state (not persisted, not URL-routed).
 let menuOpen = false;
+// Transient: "new routine" name-entry drawer (open from the edit list).
+let newRoutineOpen = false;
 
 // Focus + drawer-scroll preservation across full re-renders. Without this,
 // every per-field change in the drawer would blow away focus + the soft
@@ -357,9 +440,6 @@ const renderHome = (state) => {
       <span class="count">${String(state.doc.routines.length).padStart(2, '0')}</span>
     </div>
     <div class="routine-list">${items}</div>
-    <div class="home-link-row">
-      <button class="text-link" data-go="#/log">Ver registro de acciones →</button>
-    </div>
     ${bottomBar(state, editBtn)}
   `;
 };
@@ -412,10 +492,34 @@ const describeCommand = (cmd, state) => {
       return `Agregaste la rutina "${p.routine.name}"`;
     case 'REMOVE_ROUTINE':
       return `Eliminaste la rutina "${p.routine.name}"`;
+    case 'MOVE_ROUTINE':
+      return `Reordenaste rutinas`;
     default:
       return cmd.type;
   }
 };
+
+const renderNewRoutineSheet = () => `
+  <div class="drawer-backdrop" data-cancel-new-routine></div>
+  <aside class="drawer" role="dialog" aria-modal="true" aria-label="Nueva rutina">
+    <div class="drawer-handle" aria-hidden="true"></div>
+    <div class="drawer-header">
+      <h3>Nueva rutina</h3>
+      <button class="icon-btn" data-cancel-new-routine aria-label="Cerrar">✕</button>
+    </div>
+    <form class="drawer-body" id="new-routine-form" autocomplete="off">
+      <div class="field">
+        <label for="new-routine-name">Nombre</label>
+        <input type="text" id="new-routine-name" name="name"
+               placeholder="Día 8: Cardio" maxlength="80"
+               autocomplete="off" />
+      </div>
+      <div class="bottom-action">
+        <button class="primary" type="submit">Crear rutina</button>
+      </div>
+    </form>
+  </aside>
+`;
 
 const renderMenuSheet = () => `
   <div class="drawer-backdrop" data-close-menu></div>
@@ -433,7 +537,7 @@ const renderMenuSheet = () => `
           </span>
           <span class="menu-text">
             <span class="menu-title">Exportar</span>
-            <span class="menu-sub">Guardá tus rutinas como JSON</span>
+            <span class="menu-sub">Guardá tus rutinas</span>
           </span>
         </button>
       </li>
@@ -444,7 +548,29 @@ const renderMenuSheet = () => `
           </span>
           <span class="menu-text">
             <span class="menu-title">Importar</span>
-            <span class="menu-sub">Reemplazá todo desde un archivo JSON</span>
+            <span class="menu-sub">Reemplazá todo desde un archivo</span>
+          </span>
+        </button>
+      </li>
+      <li>
+        <button class="menu-item" data-go="#/log">
+          <span class="menu-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="12 6 12 12 16 14"/><circle cx="12" cy="12" r="10"/></svg>
+          </span>
+          <span class="menu-text">
+            <span class="menu-title">Ver registro</span>
+            <span class="menu-sub">Historial de acciones</span>
+          </span>
+        </button>
+      </li>
+      <li>
+        <button class="menu-item" data-reset>
+          <span class="menu-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+          </span>
+          <span class="menu-text">
+            <span class="menu-title">Restaurar rutina inicial</span>
+            <span class="menu-sub">Volvé al programa original</span>
           </span>
         </button>
       </li>
@@ -601,8 +727,10 @@ const renderWorkout = (state, routineId, editExerciseId, editMode = false) => {
     <div class="workout-progress" aria-hidden="true"><div style="width:${pct}%"></div></div>
     ${items}
     ${editMode && routine.exercises.length > 0 ? `
-      <div class="bottom-action">
-        <button class="primary" data-add-exercise data-routine="${esc(routine.id)}">+ Agregar ejercicio</button>
+      <div class="fab-row">
+        <button class="fab" data-add-exercise data-routine="${esc(routine.id)}" aria-label="Agregar ejercicio">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>
       </div>
     ` : ''}
     ${!editMode && routine.exercises.length > 0 ? `
@@ -715,7 +843,14 @@ const renderDrawer = (routine, ex) => {
 
 const renderEdit = (state) => {
   const items = state.doc.routines.map((r, i) => `
-    <div class="edit-row">
+    <div class="edit-row" data-reorder-index="${i}" data-routine-id="${esc(r.id)}">
+      <button class="drag-handle" data-drag-handle aria-label="Arrastrar para reordenar">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true">
+          <circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/>
+          <circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/>
+          <circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/>
+        </svg>
+      </button>
       <span class="rc-badge">${dayNum(i)}</span>
       <input class="edit-row-name" type="text"
              data-rename-routine data-routine="${esc(r.id)}"
@@ -736,13 +871,12 @@ const renderEdit = (state) => {
       <span class="label">Editar rutinas</span>
       <span class="count">${String(state.doc.routines.length).padStart(2, '0')}</span>
     </div>
-    <p class="edit-hint">Renombrá o eliminá rutinas. Para editar los ejercicios de una rutina, abríla y tocá <em>Editar</em>.</p>
-    <div class="edit-list">${items}</div>
-    <div class="bottom-action">
-      <button class="primary" data-add-routine>+ Nueva rutina</button>
-    </div>
-    <div class="bottom-action">
-      <button class="danger" data-reset>Restaurar rutina inicial</button>
+    <p class="edit-hint">Renombrá, reordená o eliminá rutinas. Para editar los ejercicios de una rutina, abríla y tocá <em>Editar</em>.</p>
+    <div class="edit-list" data-reorder-list>${items}</div>
+    <div class="fab-row">
+      <button class="fab" data-add-routine aria-label="Nueva rutina">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      </button>
     </div>
     ${bottomBar(state, doneBtn)}
   `;
@@ -764,8 +898,9 @@ const render = (state) => {
   else html = renderHome(state);
 
   if (menuOpen) html += renderMenuSheet();
+  if (newRoutineOpen) html += renderNewRoutineSheet();
 
-  const drawerOpen = (route.name === 'workout' && !!route.editExerciseId) || menuOpen;
+  const drawerOpen = (route.name === 'workout' && !!route.editExerciseId) || menuOpen || newRoutineOpen;
   const suppressDrawerAnim = drawerOpen && lastDrawerOpen;
 
   const routeKey = JSON.stringify(route);
@@ -793,6 +928,22 @@ const render = (state) => {
   else document.body.removeAttribute('data-drawer-open');
   lastDrawerOpen = drawerOpen;
   lastRouteKey = routeKey;
+
+  // Auto-focus the name field when the new-routine drawer first opens.
+  if (newRoutineOpen) {
+    const input = document.getElementById('new-routine-name');
+    if (input && document.activeElement !== input) {
+      requestAnimationFrame(() => input.focus());
+    }
+  }
+
+  // Wire drag-to-reorder on any list flagged with data-reorder-list.
+  const list = root.querySelector('[data-reorder-list]');
+  if (list) {
+    attachReorder(list, (from, to) => {
+      store.dispatch(makeCommand('MOVE_ROUTINE', { from, to }));
+    });
+  }
 };
 
 // ---------- Export / Import ----------
@@ -891,7 +1042,7 @@ const importConfig = async () => {
 // ---------- event delegation ----------
 
 const onClick = async (e) => {
-  const t = e.target.closest('[data-go],[data-done],[data-undo],[data-redo],[data-toggle-set],[data-toggle-media],[data-clear-sets],[data-add-routine],[data-add-exercise],[data-remove-exercise],[data-remove-routine],[data-reset],[data-edit-exercise],[data-close-drawer],[data-tap-title],[data-menu],[data-close-menu],[data-export],[data-import]');
+  const t = e.target.closest('[data-go],[data-done],[data-undo],[data-redo],[data-toggle-set],[data-toggle-media],[data-clear-sets],[data-add-routine],[data-add-exercise],[data-remove-exercise],[data-remove-routine],[data-reset],[data-edit-exercise],[data-close-drawer],[data-tap-title],[data-menu],[data-close-menu],[data-export],[data-import],[data-cancel-new-routine]');
   if (!t) return;
 
   if (t.hasAttribute('data-tap-title')) {
@@ -995,12 +1146,13 @@ const onClick = async (e) => {
     return;
   }
   if (t.hasAttribute('data-add-routine')) {
-    const name = prompt('Nombre de la nueva rutina:', 'Nueva rutina');
-    if (!name) return;
-    const routine = { id: uid(), name: name.trim(), exercises: [] };
-    store.dispatch(makeCommand('ADD_ROUTINE', {
-      index: store.state.doc.routines.length, routine,
-    }));
+    newRoutineOpen = true;
+    render(store.state);
+    return;
+  }
+  if (t.hasAttribute('data-cancel-new-routine')) {
+    newRoutineOpen = false;
+    render(store.state);
     return;
   }
   if (t.hasAttribute('data-add-exercise')) {
@@ -1058,6 +1210,7 @@ const onClick = async (e) => {
     return;
   }
   if (t.hasAttribute('data-reset')) {
+    if (menuOpen) { menuOpen = false; render(store.state); }
     const ok = await confirmModal({
       title: 'Restaurar rutina inicial',
       message: 'Se van a borrar tus cambios y volver al programa original.',
@@ -1130,6 +1283,22 @@ const onChange = (e) => {
   }
 };
 
+// Form submit: only the new-routine drawer uses a <form>.
+const onSubmit = (e) => {
+  if (e.target.id !== 'new-routine-form') return;
+  e.preventDefault();
+  const input = document.getElementById('new-routine-name');
+  const name = (input?.value ?? '').trim();
+  if (!name) { input?.focus(); return; }
+  const routine = { id: uid(), name, exercises: [] };
+  store.dispatch(makeCommand('ADD_ROUTINE', {
+    index: store.state.doc.routines.length, routine,
+  }));
+  newRoutineOpen = false;
+  render(store.state);
+  showToast(`Rutina "${name}" creada`);
+};
+
 const isEditableTarget = (e) => {
   const t = e.target;
   return t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
@@ -1158,10 +1327,15 @@ const start = async () => {
   // the background. If the cache is empty this awaits the network fetch.
   await initQuotes();
   store.subscribe(() => render(store.state));
-  window.addEventListener('hashchange', () => { menuOpen = false; render(store.state); });
+  window.addEventListener('hashchange', () => {
+    menuOpen = false;
+    newRoutineOpen = false;
+    render(store.state);
+  });
   window.addEventListener('click', onClick);
   window.addEventListener('change', onChange);
   window.addEventListener('keydown', onKeyDown);
+  window.addEventListener('submit', onSubmit);
   render(store.state);
 };
 

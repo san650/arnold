@@ -1,7 +1,9 @@
 import { coalesceKeyOf } from './commands.js';
 
 const COALESCE_WINDOW_MS = 700;
-const MAX_ENTRIES = 200;
+// Cap the persisted history so the IndexedDB blob doesn't grow forever.
+// Oldest entries are dropped as new ones come in.
+const MAX_ENTRIES = 150;
 
 export class History {
   constructor() {
