@@ -344,16 +344,27 @@ input:focus, select:focus, textarea:focus {
   backdrop-filter: blur(8px);
   border-radius: 0 0 1rem 1rem;
 }
-.workout-bar .back {
-  font-family: var(--display);
-  font-weight: 700;
-  font-size: 0.9rem;
+/* Icon-only back button — translucent, no chrome, melts into the
+   sticky top toolbar. Big chevron, generous tap target. */
+.back-btn {
+  width: 40px;
+  height: 40px;
+  min-height: 40px;
+  padding: 0;
+  margin-inline-start: -0.4rem; /* hugs the left edge */
+  border-radius: var(--radius-sm);
   background: transparent;
   border: 0;
-  color: var(--fg);
-  min-height: 40px;
-  padding-inline: 0.5rem 0.625rem;
+  color: var(--muted-2);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: opacity 0.12s ease, transform 0.06s ease;
 }
+.back-btn:hover { opacity: 0.85; }
+.back-btn:active { transform: scale(0.9); opacity: 0.75; }
+.back-btn svg { display: block; }
 .workout-bar .title-block { min-width: 0; overflow: hidden; }
 .workout-bar .title {
   font-family: var(--display);

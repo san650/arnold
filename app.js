@@ -297,6 +297,9 @@ const go = (path) => { location.hash = path; };
 const iconUndo = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg>`;
 const iconRedo = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 14l5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/></svg>`;
 const iconKebab = `<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="12" cy="19" r="1.7"/></svg>`;
+const iconBack = `<svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>`;
+const backBtn = (href, label = 'Volver al inicio') =>
+  `<button class="back-btn" data-go="${esc(href)}" aria-label="${esc(label)}">${iconBack}</button>`;
 
 // Fixed bottom action bar rendered on every view. Left: undo/redo.
 // Right: contextual primary action (Editar on home, Listo on edit) + kebab.
@@ -602,7 +605,7 @@ const renderLog = (state) => {
   `).join('');
   return `
     <header class="workout-bar">
-      <button class="back" data-go="#/" aria-label="Volver">‹ Inicio</button>
+      ${backBtn('#/')}
       <div class="title-block">
         <div class="title">Registro</div>
         <div class="sub">${past.length} ${past.length === 1 ? 'acción' : 'acciones'}</div>
@@ -717,7 +720,7 @@ const renderWorkout = (state, routineId, editExerciseId, editMode = false) => {
 
   return `
     <header class="workout-bar">
-      <button class="back" data-go="#/" aria-label="Volver">‹ Inicio</button>
+      ${backBtn('#/')}
       <div class="title-block">
         <div class="title">${esc(displayName(routine.name))}</div>
         <div class="sub">Día ${dayNum(num)} · ${String(done).padStart(2, '0')} / ${String(total).padStart(2, '0')} series</div>
@@ -864,7 +867,7 @@ const renderEdit = (state) => {
   return `
     <header class="app-bar">
       <div class="app-bar-left">
-        <button class="back" data-go="#/" aria-label="Volver" style="background:transparent;border:0;color:var(--fg);font-family:var(--display);font-weight:700;font-size:0.95rem;padding:0.5rem 0.5rem 0.5rem 0;min-height:40px">‹ Inicio</button>
+        ${backBtn('#/')}
       </div>
     </header>
     <div class="section">
