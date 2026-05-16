@@ -45,6 +45,15 @@ class Store {
     this.#notify();
   }
 
+  // Lifecycle: replace the entire doc (used by Import). Clears history so
+  // undo can't bridge across an import boundary.
+  replaceDoc(doc) {
+    this.state = { doc: structuredClone(doc) };
+    this.history.clear();
+    this.#persist();
+    this.#notify();
+  }
+
   dispatch(cmd) {
     if (isNoOp(cmd)) return;
     const def = COMMANDS[cmd.type];

@@ -71,7 +71,7 @@ const confirmModal = ({ title, message, confirmLabel = 'Confirmar', cancelLabel 
         ${title ? `<h3>${esc(title)}</h3>` : ''}
         ${message ? `<p>${esc(message)}</p>` : ''}
         <div class="modal-actions">
-          <button class="ghost" data-modal-action="cancel">${esc(cancelLabel)}</button>
+          ${cancelLabel ? `<button class="ghost" data-modal-action="cancel">${esc(cancelLabel)}</button>` : ''}
           <button class="${destructive ? 'danger-primary' : 'primary'}" data-modal-action="confirm">${esc(confirmLabel)}</button>
         </div>
       </div>`;
@@ -119,6 +119,9 @@ let lastDrawerOpen = false;
 // Tracks last route serialization so we can decide whether a re-render is
 // for the same view (preserve scroll) or a navigation (scroll to top).
 let lastRouteKey = null;
+
+// Transient: bottom kebab menu open state (not persisted, not URL-routed).
+let menuOpen = false;
 
 // Focus + drawer-scroll preservation across full re-renders. Without this,
 // every per-field change in the drawer would blow away focus + the soft
@@ -168,13 +171,6 @@ const todayKey = () => {
   return `${y}-${m}-${day}`;
 };
 
-const fmtTodayLabel = () => {
-  const d = new Date();
-  return new Intl.DateTimeFormat('es', {
-    weekday: 'long', day: 'numeric', month: 'long',
-  }).format(d);
-};
-
 const uid = () => 'x' + Math.random().toString(36).slice(2, 10);
 
 const sessionFor = (state, date, exerciseId) =>
@@ -204,7 +200,6 @@ const parseRoute = () => {
     }
     return r;
   }
-  if (parts[0] === 'edit' && parts[1]) return { name: 'edit-routine', routineId: parts[1] };
   if (parts[0] === 'edit') return { name: 'edit' };
   if (parts[0] === 'log') return { name: 'log' };
   if (parts[0] === 'motivation') return { name: 'motivation' };
@@ -218,9 +213,10 @@ const go = (path) => { location.hash = path; };
 // SVG icons used in the bottom toolbar.
 const iconUndo = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg>`;
 const iconRedo = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 14l5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/></svg>`;
+const iconKebab = `<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="12" cy="19" r="1.7"/></svg>`;
 
 // Fixed bottom action bar rendered on every view. Left: undo/redo.
-// Right: contextual primary action (Editar on home, Listo on edit, etc).
+// Right: contextual primary action (Editar on home, Listo on edit) + kebab.
 const bottomBar = (state, primary = '') => `
   <nav class="bottom-bar">
     <div class="bottom-bar-inner">
@@ -228,7 +224,10 @@ const bottomBar = (state, primary = '') => `
         <button class="tool-btn" data-undo aria-label="Deshacer" ${state._undo ? '' : 'disabled'}>${iconUndo}</button>
         <button class="tool-btn" data-redo aria-label="Rehacer" ${state._redo ? '' : 'disabled'}>${iconRedo}</button>
       </div>
-      <div class="group">${primary}</div>
+      <div class="group">
+        ${primary}
+        <button class="tool-btn" data-menu aria-label="Más opciones">${iconKebab}</button>
+      </div>
     </div>
   </nav>
 `;
@@ -250,9 +249,7 @@ const logoSvg = `
 </svg>`;
 
 const DAY_WORDS = ['Uno', 'Dos', 'Tres', 'Cuatro', 'Cinco', 'Seis', 'Siete', 'Ocho', 'Nueve', 'Diez', 'Once', 'Doce'];
-const ROMAN = ['I','II','III','IV','V','VI','VII','VIII','IX','X','XI','XII','XIII','XIV','XV','XVI','XVII','XVIII','XIX','XX'];
 const dayWord = (i) => DAY_WORDS[i] ?? String(i + 1);
-const roman = (n) => ROMAN[n - 1] ?? String(n);
 const dayNum = (i) => String(i + 1).padStart(2, '0');
 const displayName = (raw) => {
   const idx = raw.indexOf(':');
@@ -419,6 +416,41 @@ const describeCommand = (cmd, state) => {
       return cmd.type;
   }
 };
+
+const renderMenuSheet = () => `
+  <div class="drawer-backdrop" data-close-menu></div>
+  <aside class="drawer drawer-menu" role="dialog" aria-modal="true" aria-label="Más opciones">
+    <div class="drawer-handle" aria-hidden="true"></div>
+    <div class="drawer-header">
+      <h3>Más opciones</h3>
+      <button class="icon-btn" data-close-menu aria-label="Cerrar">✕</button>
+    </div>
+    <ul class="menu-list">
+      <li>
+        <button class="menu-item" data-export>
+          <span class="menu-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          </span>
+          <span class="menu-text">
+            <span class="menu-title">Exportar</span>
+            <span class="menu-sub">Guardá tus rutinas como JSON</span>
+          </span>
+        </button>
+      </li>
+      <li>
+        <button class="menu-item" data-import>
+          <span class="menu-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          </span>
+          <span class="menu-text">
+            <span class="menu-title">Importar</span>
+            <span class="menu-sub">Reemplazá todo desde un archivo JSON</span>
+          </span>
+        </button>
+      </li>
+    </ul>
+  </aside>
+`;
 
 const renderMotivation = () => {
   const quote = pickQuote();
@@ -683,17 +715,15 @@ const renderDrawer = (routine, ex) => {
 
 const renderEdit = (state) => {
   const items = state.doc.routines.map((r, i) => `
-    <button class="routine-card" data-go="#/edit/${esc(r.id)}">
-      <div class="rc-row1">
-        <span class="rc-badge">${dayNum(i)}</span>
-        <div class="rc-title">
-          <span class="rc-eyebrow">Día ${esc(dayWord(i))}</span>
-          ${esc(displayName(r.name))}
-        </div>
-        <span class="rc-chev" aria-hidden="true">›</span>
-      </div>
-      <div class="rc-row2"><span class="num small muted">${String(r.exercises.length).padStart(2, '0')} ejercicios</span></div>
-    </button>
+    <div class="edit-row">
+      <span class="rc-badge">${dayNum(i)}</span>
+      <input class="edit-row-name" type="text"
+             data-rename-routine data-routine="${esc(r.id)}"
+             value="${esc(r.name)}" aria-label="Nombre de la rutina" />
+      <button class="ex-edit danger-edit"
+              data-remove-routine data-routine="${esc(r.id)}"
+              aria-label="Eliminar rutina">✕</button>
+    </div>
   `).join('');
 
   return `
@@ -706,7 +736,8 @@ const renderEdit = (state) => {
       <span class="label">Editar rutinas</span>
       <span class="count">${String(state.doc.routines.length).padStart(2, '0')}</span>
     </div>
-    <div class="routine-list">${items}</div>
+    <p class="edit-hint">Renombrá o eliminá rutinas. Para editar los ejercicios de una rutina, abríla y tocá <em>Editar</em>.</p>
+    <div class="edit-list">${items}</div>
     <div class="bottom-action">
       <button class="primary" data-add-routine>+ Nueva rutina</button>
     </div>
@@ -717,100 +748,6 @@ const renderEdit = (state) => {
   `;
 };
 
-const renderEditRoutine = (state, routineId) => {
-  const r = state.doc.routines.find((x) => x.id === routineId);
-  if (!r) return renderEdit(state);
-
-  const rows = r.exercises.map((ex) => `
-    <div class="exercise" data-ex-row="${esc(ex.id)}">
-      <div class="field">
-        <label>Nombre</label>
-        <input type="text" data-update name="name" value="${esc(ex.name)}"
-               data-routine="${esc(r.id)}" data-exercise="${esc(ex.id)}" />
-      </div>
-      <div class="field">
-        <label>Tipo</label>
-        <select data-update name="kind"
-                data-routine="${esc(r.id)}" data-exercise="${esc(ex.id)}">
-          <option value="reps" ${exKind(ex) === 'reps' ? 'selected' : ''}>Repeticiones</option>
-          <option value="time" ${exKind(ex) === 'time' ? 'selected' : ''}>Tiempo (cardio)</option>
-        </select>
-      </div>
-      <div class="row">
-        <div class="field" style="flex:1">
-          <label>Series</label>
-          <input type="number" min="1" max="20" data-update name="sets" value="${ex.sets}"
-                 data-routine="${esc(r.id)}" data-exercise="${esc(ex.id)}" />
-        </div>
-        <div class="field" style="flex:2">
-          ${exKind(ex) === 'time' ? `
-            <label>Duración</label>
-            <input type="text" data-update name="duration" value="${esc(ex.duration ?? '')}"
-                   data-routine="${esc(r.id)}" data-exercise="${esc(ex.id)}"
-                   placeholder="30 min" />
-          ` : `
-            <label>Reps</label>
-            <input type="text" data-update name="reps" value="${esc(ex.reps ?? '')}"
-                   data-routine="${esc(r.id)}" data-exercise="${esc(ex.id)}"
-                   placeholder="8-12" />
-          `}
-        </div>
-      </div>
-      <div class="field">
-        <label>Video (URL)</label>
-        <input type="text" data-update name="video" value="${esc(ex.video ?? '')}"
-               data-routine="${esc(r.id)}" data-exercise="${esc(ex.id)}"
-               placeholder="https://youtu.be/... o https://.../foto.jpg" />
-      </div>
-      <div class="field">
-        <label>Notas</label>
-        <input type="text" data-update name="notes" value="${esc(ex.notes ?? '')}"
-               data-routine="${esc(r.id)}" data-exercise="${esc(ex.id)}" />
-      </div>
-      <div class="exercise-row-actions">
-        <button class="danger" data-remove-exercise
-                data-routine="${esc(r.id)}" data-exercise="${esc(ex.id)}">Eliminar</button>
-      </div>
-    </div>
-  `).join('');
-
-  const idx = state.doc.routines.findIndex((x) => x.id === r.id);
-  const num = idx >= 0 ? idx : 0;
-  return `
-    <header class="workout-bar">
-      <button class="back" data-go="#/edit" aria-label="Volver">‹ Rutinas</button>
-      <div class="title-block">
-        <div class="title">${esc(displayName(r.name))}</div>
-        <div class="sub">Día ${dayNum(num)} · ${String(r.exercises.length).padStart(2, '0')} ejercicios</div>
-      </div>
-      <span></span>
-    </header>
-    <div class="field">
-      <label>Nombre de la rutina</label>
-      <input type="text" data-rename-routine data-routine="${esc(r.id)}" value="${esc(r.name)}" />
-    </div>
-    <div class="section">
-      <span class="label">Ejercicios</span>
-      <span class="count">${String(r.exercises.length).padStart(2, '0')}</span>
-    </div>
-    ${r.exercises.length === 0 ? `
-      <div class="empty-state">
-        <div class="empty-icon" aria-hidden="true">＋</div>
-        <p>Esta rutina no tiene ejercicios todavía.</p>
-        <button class="primary" data-add-exercise data-routine="${esc(r.id)}">Agregar primer ejercicio</button>
-      </div>
-    ` : `
-      ${rows}
-      <div class="bottom-action">
-        <button class="primary" data-add-exercise data-routine="${esc(r.id)}">+ Agregar ejercicio</button>
-      </div>
-    `}
-    <div class="bottom-action">
-      <button class="danger" data-remove-routine data-routine="${esc(r.id)}">Eliminar rutina</button>
-    </div>
-    ${bottomBar(state, doneBtn)}
-  `;
-};
 
 // ---------- render dispatch ----------
 
@@ -822,12 +759,13 @@ const render = (state) => {
   let html;
   if (route.name === 'workout') html = renderWorkout(state, route.routineId, route.editExerciseId, !!route.editMode);
   else if (route.name === 'edit') html = renderEdit(state);
-  else if (route.name === 'edit-routine') html = renderEditRoutine(state, route.routineId);
   else if (route.name === 'log') html = renderLog(state);
   else if (route.name === 'motivation') html = renderMotivation(state);
   else html = renderHome(state);
 
-  const drawerOpen = route.name === 'workout' && !!route.editExerciseId;
+  if (menuOpen) html += renderMenuSheet();
+
+  const drawerOpen = (route.name === 'workout' && !!route.editExerciseId) || menuOpen;
   const suppressDrawerAnim = drawerOpen && lastDrawerOpen;
 
   const routeKey = JSON.stringify(route);
@@ -857,10 +795,103 @@ const render = (state) => {
   lastRouteKey = routeKey;
 };
 
+// ---------- Export / Import ----------
+
+const exportConfig = async () => {
+  const data = JSON.stringify(store.state.doc, null, 2);
+  const filename = `arnold-${new Date().toISOString().slice(0, 10)}.json`;
+  const blob = new Blob([data], { type: 'application/json' });
+
+  // Prefer the system share sheet (iOS / Android) so the user can save to
+  // Files, send to a contact, etc.
+  try {
+    const file = new File([blob], filename, { type: 'application/json' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file], title: 'Arnold · Configuración' });
+      return;
+    }
+  } catch (err) {
+    if (err?.name === 'AbortError') return; // user cancelled the share
+  }
+
+  // Fallback: trigger a download via an <a download>.
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  showToast('Configuración exportada');
+};
+
+const importConfig = async () => {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'application/json,.json';
+  input.style.cssText = 'position:fixed;left:-9999px;';
+  document.body.appendChild(input);
+
+  const file = await new Promise((resolve) => {
+    let resolved = false;
+    input.addEventListener('change', () => { resolved = true; resolve(input.files?.[0] || null); }, { once: true });
+    // If the user dismisses the picker without selecting a file there's no
+    // event — resolve with null after focus returns and no change fired.
+    window.addEventListener('focus', () => {
+      setTimeout(() => { if (!resolved) resolve(null); }, 350);
+    }, { once: true });
+    input.click();
+  });
+  input.remove();
+
+  if (!file) return;
+
+  let data;
+  try {
+    const text = await file.text();
+    data = JSON.parse(text);
+  } catch {
+    await confirmModal({
+      title: 'Archivo inválido',
+      message: 'No se pudo leer el JSON. Verificá que el archivo no esté corrupto.',
+      confirmLabel: 'Entendido',
+      cancelLabel: '',
+    });
+    return;
+  }
+
+  if (!data || typeof data !== 'object' || !Array.isArray(data.routines)) {
+    await confirmModal({
+      title: 'Archivo inválido',
+      message: 'El JSON no tiene la estructura esperada (falta el campo "routines").',
+      confirmLabel: 'Entendido',
+      cancelLabel: '',
+    });
+    return;
+  }
+
+  const ok = await confirmModal({
+    title: 'Reemplazar configuración',
+    message: `Vas a sustituir tus ${store.state.doc.routines.length} rutinas y todas las sesiones por las del archivo (${data.routines.length} rutinas). Esta acción no se puede deshacer.`,
+    confirmLabel: 'Reemplazar',
+    cancelLabel: 'Cancelar',
+    destructive: true,
+  });
+  if (!ok) return;
+
+  // Ensure sessions exists so the store doesn't break later.
+  if (!data.sessions || typeof data.sessions !== 'object') data.sessions = {};
+
+  store.replaceDoc(data);
+  go('#/');
+  showToast('Configuración importada');
+};
+
 // ---------- event delegation ----------
 
 const onClick = async (e) => {
-  const t = e.target.closest('[data-go],[data-done],[data-undo],[data-redo],[data-toggle-set],[data-toggle-media],[data-clear-sets],[data-add-routine],[data-add-exercise],[data-remove-exercise],[data-remove-routine],[data-reset],[data-edit-exercise],[data-close-drawer],[data-tap-title]');
+  const t = e.target.closest('[data-go],[data-done],[data-undo],[data-redo],[data-toggle-set],[data-toggle-media],[data-clear-sets],[data-add-routine],[data-add-exercise],[data-remove-exercise],[data-remove-routine],[data-reset],[data-edit-exercise],[data-close-drawer],[data-tap-title],[data-menu],[data-close-menu],[data-export],[data-import]');
   if (!t) return;
 
   if (t.hasAttribute('data-tap-title')) {
@@ -885,6 +916,28 @@ const onClick = async (e) => {
     const routineId = t.dataset.routine;
     const exerciseId = t.dataset.exercise;
     go(`#/workout/${routineId}/edit/${exerciseId}`);
+    return;
+  }
+  if (t.hasAttribute('data-menu')) {
+    menuOpen = true;
+    render(store.state);
+    return;
+  }
+  if (t.hasAttribute('data-close-menu')) {
+    menuOpen = false;
+    render(store.state);
+    return;
+  }
+  if (t.hasAttribute('data-export')) {
+    menuOpen = false;
+    render(store.state);
+    await exportConfig();
+    return;
+  }
+  if (t.hasAttribute('data-import')) {
+    menuOpen = false;
+    render(store.state);
+    await importConfig();
     return;
   }
   if (t.hasAttribute('data-close-drawer')) {
@@ -1105,7 +1158,7 @@ const start = async () => {
   // the background. If the cache is empty this awaits the network fetch.
   await initQuotes();
   store.subscribe(() => render(store.state));
-  window.addEventListener('hashchange', () => render(store.state));
+  window.addEventListener('hashchange', () => { menuOpen = false; render(store.state); });
   window.addEventListener('click', onClick);
   window.addEventListener('change', onChange);
   window.addEventListener('keydown', onKeyDown);
