@@ -662,13 +662,24 @@ const renderWorkout = (state, routineId, editExerciseId, editMode = false) => {
             video = `<a class="video-link" href="${esc(media.url)}" target="_blank" rel="noopener noreferrer">Abrir enlace</a>`;
           } else {
             const open = expandedMedia.has(ex.id);
-            const label = media.kind === 'image'
-              ? (open ? 'Ocultar imagen' : 'Ver imagen')
-              : (open ? 'Ocultar video' : 'Ver video');
-            const embed = open ? renderMedia(media) : '';
+            const title = media.kind === 'image'
+              ? (open ? 'Imagen' : 'Ver imagen')
+              : (open ? 'Video' : 'Ver video');
+            // Embed only mounts when open — no iframe / <img> network hit
+            // until the user opens the panel.
+            const body = open ? `<div class="media-content">${renderMedia(media)}</div>` : '';
             video = `
-              <button class="video-link" data-toggle-media data-exercise="${esc(ex.id)}" aria-expanded="${open}">${label}</button>
-              ${embed}
+              <div class="media-panel${open ? ' open' : ''}">
+                <button class="media-toggle"
+                        data-toggle-media data-exercise="${esc(ex.id)}"
+                        aria-expanded="${open}">
+                  <span class="media-toggle-title">${title}</span>
+                  <span class="media-toggle-chev">
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 6 15 12 9 18"/></svg>
+                  </span>
+                </button>
+                ${body}
+              </div>
             `;
           }
         }

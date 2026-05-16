@@ -558,6 +558,67 @@ input:focus, select:focus, textarea:focus {
 }
 button.video-link { font: inherit; font-weight: 600; font-size: 0.85rem; }
 
+/* ---------- Collapsible media panel (<details>-style) ---------- */
+
+/* Break out of .exercise's horizontal padding so the embed itself can
+   use the full card width. Top + bottom borders only — left/right are
+   the card edges. */
+.media-panel {
+  margin: 0.875rem -1rem -0.875rem;
+  background: var(--bg-elev-2);
+  border-top: 1px solid var(--line);
+  border-bottom: 0;
+  border-radius: 0 0 var(--radius) var(--radius);
+  overflow: hidden;
+}
+.media-toggle {
+  width: 100%;
+  min-height: 46px;
+  padding: 0.65rem 0.875rem;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  font-family: var(--body);
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: var(--fg);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  cursor: pointer;
+  letter-spacing: 0;
+}
+.media-toggle:hover { background: var(--bg-elev); }
+.media-toggle:active { background: var(--bg-elev); transform: none; }
+.media-toggle-title { flex: 1; text-align: left; }
+.media-toggle-chev {
+  display: inline-flex;
+  align-items: center;
+  color: var(--muted);
+  transition: transform 0.2s cubic-bezier(.22, .8, .25, 1), color 0.15s ease;
+}
+.media-panel.open .media-toggle-chev {
+  transform: rotate(90deg);
+  color: var(--accent);
+}
+.media-content {
+  padding: 0;
+  border-top: 1px solid var(--line);
+  animation: media-panel-in 0.22s cubic-bezier(.22, .8, .25, 1);
+}
+/* Inside the panel the wrap is full-bleed: no margin, no border (panel
+   already has one), and the bottom of the iframe meets the card edge. */
+.media-content .media-wrap {
+  margin-top: 0;
+  border: 0;
+  border-radius: 0 0 var(--radius) var(--radius);
+}
+@keyframes media-panel-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
 .media-wrap {
   margin-top: 0.625rem;
   border: 1px solid var(--line);
