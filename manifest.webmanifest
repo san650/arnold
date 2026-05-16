@@ -1,0 +1,20 @@
+{
+  "name": "Arnold",
+  "short_name": "Arnold",
+  "description": "Registro de entrenamiento de gimnasio",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#1F2937",
+  "theme_color": "#1F2937",
+  "lang": "es",
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
