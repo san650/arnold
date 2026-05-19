@@ -192,6 +192,28 @@ let lastRouteKey = null;
 
 // Transient: bottom kebab menu open state (not persisted, not URL-routed).
 let menuOpen = false;
+// Service worker cache version (e.g. "v13"), surfaced in the kebab menu.
+let cacheVersion = '';
+
+const requestCacheVersion = async () => {
+  if (!('serviceWorker' in navigator)) return;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const sw = reg.active;
+    if (!sw) return;
+    const channel = new MessageChannel();
+    const v = await new Promise((resolve) => {
+      channel.port1.onmessage = (e) => resolve(e.data?.version || '');
+      sw.postMessage({ type: 'GET_VERSION' }, [channel.port2]);
+    });
+    const tag = v.replace(/^.*-(v\d+)$/, '$1');
+    if (tag && tag !== cacheVersion) {
+      cacheVersion = tag;
+      if (menuOpen) render(store.state);
+    }
+  } catch {}
+};
+requestCacheVersion();
 // Transient: "new routine" name-entry drawer (open from the edit list).
 let newRoutineOpen = false;
 // Transient: in-workout stopwatch overlay. Each open starts from zero;
@@ -578,7 +600,7 @@ const renderMenuSheet = () => `
   <aside class="drawer drawer-menu" role="dialog" aria-modal="true" aria-label="Más opciones">
     <div class="drawer-handle" aria-hidden="true"></div>
     <div class="drawer-header">
-      <h3>Más opciones</h3>
+      <h3>Más opciones${cacheVersion ? ` <span class="menu-cache-version">${esc(cacheVersion)}</span>` : ''}</h3>
       <button class="icon-btn" data-close-menu aria-label="Cerrar">✕</button>
     </div>
     <ul class="menu-list">

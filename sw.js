@@ -1,4 +1,5 @@
-const CACHE = 'arnold-v12';
+const VERSION = 'v13';
+const CACHE = `arnold-${VERSION}`;
 
 const SHELL = [
   './',
@@ -37,6 +38,12 @@ self.addEventListener('activate', (event) => {
       .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
       .then(() => self.clients.claim())
   );
+});
+
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'GET_VERSION') {
+    event.ports[0]?.postMessage({ version: VERSION });
+  }
 });
 
 self.addEventListener('fetch', (event) => {

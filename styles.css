@@ -1032,6 +1032,14 @@ body[data-drawer-open] { overflow: hidden; }
 /* ---------- Menu sheet (bottom kebab drawer) ---------- */
 
 .drawer-menu .drawer-header { border-bottom: 1px solid var(--line); }
+.menu-cache-version {
+  margin-left: 0.4rem;
+  font-family: var(--mono, monospace);
+  font-weight: 500;
+  font-size: 0.72rem;
+  letter-spacing: 0;
+  color: var(--muted-2);
+}
 .menu-list {
   list-style: none;
   margin: 0;
