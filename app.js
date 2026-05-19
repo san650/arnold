@@ -194,6 +194,39 @@ let lastRouteKey = null;
 let menuOpen = false;
 // Transient: "new routine" name-entry drawer (open from the edit list).
 let newRoutineOpen = false;
+// Transient: in-workout stopwatch overlay. Each open starts from zero;
+// tick interval drives a single DOM text node (no store dispatches).
+let stopwatchOpen = false;
+let stopwatchStart = 0;
+let stopwatchTimer = null;
+
+const fmtStopwatch = (ms) => {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+};
+
+const tickStopwatch = () => {
+  const el = document.getElementById('stopwatch-display');
+  if (!el) return;
+  el.textContent = fmtStopwatch(performance.now() - stopwatchStart);
+};
+
+const openStopwatch = () => {
+  if (stopwatchOpen) return;
+  stopwatchOpen = true;
+  stopwatchStart = performance.now();
+  render(store.state);
+  stopwatchTimer = setInterval(tickStopwatch, 250);
+};
+
+const closeStopwatch = () => {
+  if (stopwatchTimer) { clearInterval(stopwatchTimer); stopwatchTimer = null; }
+  if (!stopwatchOpen) return;
+  stopwatchOpen = false;
+  render(store.state);
+};
 
 // Focus + drawer-scroll preservation across full re-renders. Without this,
 // every per-field change in the drawer would blow away focus + the soft
@@ -287,6 +320,7 @@ const iconUndo = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" st
 const iconRedo = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 14l5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/></svg>`;
 const iconKebab = `<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="12" cy="19" r="1.7"/></svg>`;
 const iconBack = `<svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>`;
+const iconStopwatch = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="14" r="7"/><polyline points="12 11 12 14 14.5 14"/><line x1="10" y1="3" x2="14" y2="3"/><line x1="12" y1="3" x2="12" y2="5"/></svg>`;
 const backBtn = (href, label = 'Volver al inicio') =>
   `<button class="back-btn" data-go="${esc(href)}" aria-label="${esc(label)}">${iconBack}</button>`;
 
@@ -570,6 +604,18 @@ const renderMenuSheet = () => `
   </aside>
 `;
 
+const renderStopwatchSheet = () => {
+  const display = stopwatchOpen
+    ? fmtStopwatch(performance.now() - stopwatchStart)
+    : '00:00';
+  return `
+    <div class="drawer-backdrop stopwatch-overlay" data-close-stopwatch role="dialog" aria-modal="true" aria-label="Cronómetro">
+      <div class="stopwatch-display" id="stopwatch-display">${display}</div>
+      <button class="stopwatch-close" data-close-stopwatch aria-label="Cerrar">✕</button>
+    </div>
+  `;
+};
+
 const renderMotivation = () => {
   const quote = pickQuote();
   const words = quote.split(/(\s+)/).map((tok, i) => {
@@ -745,7 +791,7 @@ const renderWorkout = (state, routineId, editExerciseId, editMode = false) => {
     ${bottomBar(state, routine.exercises.length > 0
       ? (editMode
           ? '<button class="icon-btn primary" data-done>Listo</button>'
-          : `<button class="icon-btn primary" data-go="#/workout/${esc(routine.id)}/edit">Editar</button>`)
+          : `<button class="tool-btn" data-stopwatch aria-label="Cronómetro">${iconStopwatch}</button><button class="icon-btn primary" data-go="#/workout/${esc(routine.id)}/edit">Editar</button>`)
       : '')}
   `;
 };
@@ -902,8 +948,9 @@ const render = (state) => {
 
   if (menuOpen) html += renderMenuSheet();
   if (newRoutineOpen) html += renderNewRoutineSheet();
+  if (stopwatchOpen) html += renderStopwatchSheet();
 
-  const drawerOpen = (route.name === 'workout' && !!route.editExerciseId) || menuOpen || newRoutineOpen;
+  const drawerOpen = (route.name === 'workout' && !!route.editExerciseId) || menuOpen || newRoutineOpen || stopwatchOpen;
   const suppressDrawerAnim = drawerOpen && lastDrawerOpen;
 
   const routeKey = JSON.stringify(route);
@@ -968,6 +1015,8 @@ const render = (state) => {
       } else if (bd.hasAttribute('data-cancel-new-routine')) {
         newRoutineOpen = false;
         render(store.state);
+      } else if (bd.hasAttribute('data-close-stopwatch')) {
+        closeStopwatch();
       } else if (bd.hasAttribute('data-close-drawer')) {
         const route = parseRoute();
         if (route.name === 'workout' && route.editExerciseId) {
@@ -1075,7 +1124,7 @@ const importConfig = async () => {
 // ---------- event delegation ----------
 
 const onClick = async (e) => {
-  const t = e.target.closest('[data-go],[data-done],[data-undo],[data-redo],[data-toggle-set],[data-toggle-media],[data-clear-sets],[data-add-routine],[data-add-exercise],[data-remove-exercise],[data-remove-routine],[data-reset],[data-edit-exercise],[data-close-drawer],[data-menu],[data-close-menu],[data-export],[data-import],[data-cancel-new-routine]');
+  const t = e.target.closest('[data-go],[data-done],[data-undo],[data-redo],[data-toggle-set],[data-toggle-media],[data-clear-sets],[data-add-routine],[data-add-exercise],[data-remove-exercise],[data-remove-routine],[data-reset],[data-edit-exercise],[data-close-drawer],[data-menu],[data-close-menu],[data-export],[data-import],[data-cancel-new-routine],[data-stopwatch],[data-close-stopwatch]');
   if (!t) return;
 
   if (t.hasAttribute('data-go')) {
@@ -1101,6 +1150,14 @@ const onClick = async (e) => {
   if (t.hasAttribute('data-menu')) {
     menuOpen = true;
     render(store.state);
+    return;
+  }
+  if (t.hasAttribute('data-stopwatch')) {
+    openStopwatch();
+    return;
+  }
+  if (t.hasAttribute('data-close-stopwatch')) {
+    closeStopwatch();
     return;
   }
   if (t.hasAttribute('data-close-menu')) {
@@ -1359,6 +1416,8 @@ const start = async () => {
   window.addEventListener('hashchange', () => {
     menuOpen = false;
     newRoutineOpen = false;
+    if (stopwatchTimer) { clearInterval(stopwatchTimer); stopwatchTimer = null; }
+    stopwatchOpen = false;
     render(store.state);
   });
   window.addEventListener('click', onClick);

@@ -783,6 +783,48 @@ button.video-link { font: inherit; font-weight: 600; font-size: 0.85rem; }
 
 body[data-drawer-open] { overflow: hidden; }
 
+/* ---------- Stopwatch overlay ---------- */
+
+.stopwatch-overlay {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 70;
+}
+.stopwatch-display {
+  font-family: var(--display);
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  font-size: clamp(4rem, 22vw, 8rem);
+  letter-spacing: -0.04em;
+  color: var(--fg);
+  line-height: 1;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.stopwatch-close {
+  position: absolute;
+  top: max(0.75rem, env(safe-area-inset-top));
+  right: max(0.75rem, env(safe-area-inset-right));
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  color: var(--fg);
+  font-size: 1.4rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.stopwatch-close:active {
+  background: var(--bg-elev-2);
+  transform: scale(0.92);
+}
+
 /* ---------- Log view ---------- */
 
 .log {
