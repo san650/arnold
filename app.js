@@ -199,6 +199,9 @@ let newRoutineOpen = false;
 let stopwatchOpen = false;
 let stopwatchStart = 0;
 let stopwatchTimer = null;
+// Screen Wake Lock: the OS auto-releases when the document hides, so we
+// must re-acquire on visibilitychange while the stopwatch is still open.
+let wakeLock = null;
 
 const fmtStopwatch = (ms) => {
   const total = Math.max(0, Math.floor(ms / 1000));
@@ -213,16 +216,39 @@ const tickStopwatch = () => {
   el.textContent = fmtStopwatch(performance.now() - stopwatchStart);
 };
 
+const acquireWakeLock = async () => {
+  if (!('wakeLock' in navigator)) return;
+  if (document.visibilityState !== 'visible') return;
+  try {
+    wakeLock = await navigator.wakeLock.request('screen');
+    wakeLock.addEventListener('release', () => { wakeLock = null; });
+  } catch {
+    wakeLock = null;
+  }
+};
+
+const releaseWakeLock = () => {
+  if (!wakeLock) return;
+  wakeLock.release().catch(() => {});
+  wakeLock = null;
+};
+
+document.addEventListener('visibilitychange', () => {
+  if (stopwatchOpen && document.visibilityState === 'visible') acquireWakeLock();
+});
+
 const openStopwatch = () => {
   if (stopwatchOpen) return;
   stopwatchOpen = true;
   stopwatchStart = performance.now();
   render(store.state);
   stopwatchTimer = setInterval(tickStopwatch, 250);
+  acquireWakeLock();
 };
 
 const closeStopwatch = () => {
   if (stopwatchTimer) { clearInterval(stopwatchTimer); stopwatchTimer = null; }
+  releaseWakeLock();
   if (!stopwatchOpen) return;
   stopwatchOpen = false;
   render(store.state);
@@ -1417,6 +1443,7 @@ const start = async () => {
     menuOpen = false;
     newRoutineOpen = false;
     if (stopwatchTimer) { clearInterval(stopwatchTimer); stopwatchTimer = null; }
+    releaseWakeLock();
     stopwatchOpen = false;
     render(store.state);
   });
