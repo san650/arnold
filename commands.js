@@ -240,6 +240,20 @@ export const COMMANDS = {
     // Each move is its own undo step (no coalescing across rapid taps).
     coalesceKey: () => 'move',
   },
+
+  MOVE_EXERCISE: {
+    apply: (s, p) => {
+      const r = findRoutine(s, p.routineId);
+      const [moved] = r.exercises.splice(p.from, 1);
+      r.exercises.splice(p.to, 0, moved);
+    },
+    revert: (s, p) => {
+      const r = findRoutine(s, p.routineId);
+      const [moved] = r.exercises.splice(p.to, 1);
+      r.exercises.splice(p.from, 0, moved);
+    },
+    coalesceKey: (p) => `move-ex:${p.routineId}`,
+  },
 };
 
 export const makeCommand = (type, payload) => ({ type, payload });

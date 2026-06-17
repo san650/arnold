@@ -414,6 +414,44 @@ input:focus, select:focus, textarea:focus {
   gap: 0.5rem;
   margin-bottom: 0.25rem;
 }
+.ex-head h3 { flex: 1; min-width: 0; }
+.ex-drag-handle {
+  flex-shrink: 0;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-xs);
+  padding: 0;
+  width: 24px;
+  min-height: 28px;
+  margin-top: -2px;
+  margin-left: -4px;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  /* Prevent touch from being interpreted as a scroll while gripping. */
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.ex-drag-handle:active { cursor: grabbing; color: var(--fg); }
+
+/* Apply the same "lift" + neighbour-slide animations to exercise cards
+   that we already use for routine rows. */
+.exercise-list .exercise {
+  transition: transform 0.18s cubic-bezier(.2, .7, .3, 1), box-shadow 0.18s ease;
+  will-change: transform;
+}
+.exercise-list.reordering .exercise .set-btn,
+.exercise-list.reordering .exercise .ex-edit { pointer-events: none; }
+.exercise.dragging {
+  z-index: 10;
+  position: relative;
+  transition: none;
+  box-shadow: 0 14px 32px -10px rgba(0, 0, 0, 0.65), 0 0 0 1px var(--accent-ring);
+  border-color: var(--accent);
+}
 .ex-head h3 {
   font-family: var(--display);
   font-weight: 800;

@@ -775,6 +775,8 @@ const describeCommand = (cmd, state) => {
       return `Eliminaste la rutina "${p.routine.name}"`;
     case 'MOVE_ROUTINE':
       return `Reordenaste rutinas`;
+    case 'MOVE_EXERCISE':
+      return `Reordenaste ejercicios`;
     case 'CATALOG_RENAME':
       return `Renombraste "${p.targets[0]?.fromValue ?? ''}" a "${p.toName}" en ${p.targets.length} rutina${p.targets.length === 1 ? '' : 's'}`;
     case 'CATALOG_UPDATE_FIELD':
@@ -940,7 +942,7 @@ const renderWorkout = (state, routineId, editExerciseId, editMode = false) => {
              <p>Esta rutina está vacía.</p>
              <button class="primary" data-add-exercise data-routine="${esc(routine.id)}" data-open-drawer="1">Agregar primer ejercicio</button>
            </div>`)
-    : routine.exercises.map((ex) => {
+    : routine.exercises.map((ex, exIndex) => {
         const arr = sessionFor(state, date, ex.id);
         const doneCount = arr.slice(0, ex.sets).filter(Boolean).length;
         const sets = Array.from({ length: ex.sets }, (_, i) => {
@@ -1008,9 +1010,19 @@ const renderWorkout = (state, routineId, editExerciseId, editMode = false) => {
                     aria-label="Eliminar ejercicio">✕</button>
           </div>
         ` : '';
+        const dragHandle = editMode ? `
+          <button class="ex-drag-handle" data-drag-handle aria-label="Arrastrar para reordenar">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true">
+              <circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/>
+              <circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/>
+              <circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/>
+            </svg>
+          </button>
+        ` : '';
         return `
-          <article class="exercise ${complete ? 'complete' : ''}">
+          <article class="exercise ${complete ? 'complete' : ''}"${editMode ? ` data-reorder-index="${exIndex}"` : ''}>
             <div class="ex-head">
+              ${dragHandle}
               <h3>${esc(ex.name)}</h3>
               ${editActions}
             </div>
@@ -1046,7 +1058,9 @@ const renderWorkout = (state, routineId, editExerciseId, editMode = false) => {
       <span></span>
     </header>
     <div class="workout-progress" aria-hidden="true"><div style="width:${pct}%"></div></div>
-    ${items}
+    ${editMode && routine.exercises.length > 0
+      ? `<div class="exercise-list" data-reorder-list data-reorder-kind="exercise" data-reorder-routine="${esc(routine.id)}">${items}</div>`
+      : items}
     ${editMode && routine.exercises.length > 0 ? `
       <div class="fab-row">
         <button class="fab" data-add-exercise data-routine="${esc(routine.id)}" aria-label="Agregar ejercicio">
@@ -1691,13 +1705,19 @@ const render = (state) => {
     }
   }
 
-  // Wire drag-to-reorder on any list flagged with data-reorder-list.
-  const list = root.querySelector('[data-reorder-list]');
-  if (list) {
+  // Wire drag-to-reorder on any list flagged with data-reorder-list. The
+  // command to dispatch is selected by `data-reorder-kind`.
+  root.querySelectorAll('[data-reorder-list]').forEach((list) => {
+    const kind = list.dataset.reorderKind || 'routine';
+    const routineId = list.dataset.reorderRoutine;
     attachReorder(list, (from, to) => {
-      store.dispatch(makeCommand('MOVE_ROUTINE', { from, to }));
+      if (kind === 'exercise' && routineId) {
+        store.dispatch(makeCommand('MOVE_EXERCISE', { routineId, from, to }));
+      } else {
+        store.dispatch(makeCommand('MOVE_ROUTINE', { from, to }));
+      }
     });
-  }
+  });
 
   // iOS Mobile Safari quirk: for non-interactive elements (plain <div> /
   // text), `click` events are only dispatched when the element has a
