@@ -12,21 +12,37 @@ const findRoutine = (state, routineId) =>
 const findExercise = (routine, exerciseId) =>
   routine.exercises.find((e) => e.id === exerciseId);
 
+// Session entries are `{ sets: boolean[], snapshot: { name, kind, weight,
+// duration, reps } | null }`. Legacy boolean[] entries are migrated on boot
+// (see app.js). This helper accepts either shape and returns the new one.
+const entryOf = (raw) => {
+  if (Array.isArray(raw)) return { sets: [...raw], snapshot: null };
+  if (raw && typeof raw === 'object') {
+    return { sets: Array.isArray(raw.sets) ? [...raw.sets] : [], snapshot: raw.snapshot ?? null };
+  }
+  return { sets: [], snapshot: null };
+};
+
 export const COMMANDS = {
   TOGGLE_SET: {
     apply: (s, p) => {
       ensureSession(s, p.date);
       const sess = s.doc.sessions[p.date];
-      const arr = sess[p.exerciseId] ? [...sess[p.exerciseId]] : [];
-      arr[p.setIndex] = p.to;
-      sess[p.exerciseId] = arr;
+      const entry = entryOf(sess[p.exerciseId]);
+      entry.sets[p.setIndex] = p.to;
+      // Snapshot reflects the most recent claim about today's lift. Only
+      // overwrite when the caller provided one (i.e. on a set-completion
+      // toggle); undos restore the prior snapshot via p.fromSnapshot.
+      if (p.snapshot !== undefined) entry.snapshot = p.snapshot ? structuredClone(p.snapshot) : null;
+      sess[p.exerciseId] = entry;
     },
     revert: (s, p) => {
       ensureSession(s, p.date);
       const sess = s.doc.sessions[p.date];
-      const arr = sess[p.exerciseId] ? [...sess[p.exerciseId]] : [];
-      arr[p.setIndex] = p.from;
-      sess[p.exerciseId] = arr;
+      const entry = entryOf(sess[p.exerciseId]);
+      entry.sets[p.setIndex] = p.from;
+      if (p.fromSnapshot !== undefined) entry.snapshot = p.fromSnapshot ? structuredClone(p.fromSnapshot) : null;
+      sess[p.exerciseId] = entry;
     },
     coalesceKey: (p) => `${p.date}:${p.exerciseId}:${p.setIndex}`,
   },
@@ -123,6 +139,93 @@ export const COMMANDS = {
       s.doc.routines.splice(p.index, 0, structuredClone(p.routine));
     },
     coalesceKey: (p) => `rm-r:${p.routine.id}`,
+  },
+
+  // Bulk catalog operations — act on every routine.exercise matching a
+  // normalized name. `targets: [{ routineId, exerciseId, fromValue }]`
+  // captures one row per matching instance so revert is exact.
+  CATALOG_RENAME: {
+    apply: (s, p) => {
+      for (const t of p.targets) {
+        const r = findRoutine(s, t.routineId);
+        if (!r) continue;
+        const e = findExercise(r, t.exerciseId);
+        if (e) e.name = p.toName;
+      }
+    },
+    revert: (s, p) => {
+      for (const t of p.targets) {
+        const r = findRoutine(s, t.routineId);
+        if (!r) continue;
+        const e = findExercise(r, t.exerciseId);
+        if (e) e.name = t.fromValue;
+      }
+    },
+    coalesceKey: (p) => `cat-rename:${p.toName}`,
+  },
+
+  // Generic per-field bulk update. `field` is one of `kind|reps|duration|
+  // weight|video|notes|sets`. Targets keep `fromValue` per instance.
+  CATALOG_UPDATE_FIELD: {
+    apply: (s, p) => {
+      for (const t of p.targets) {
+        const r = findRoutine(s, t.routineId);
+        if (!r) continue;
+        const e = findExercise(r, t.exerciseId);
+        if (!e) continue;
+        e[p.field] = p.toValue === null || p.toValue === undefined
+          ? (p.field === 'weight' || p.field === 'video' ? null : '')
+          : (typeof p.toValue === 'object' ? structuredClone(p.toValue) : p.toValue);
+      }
+    },
+    revert: (s, p) => {
+      for (const t of p.targets) {
+        const r = findRoutine(s, t.routineId);
+        if (!r) continue;
+        const e = findExercise(r, t.exerciseId);
+        if (!e) continue;
+        e[p.field] = t.fromValue === null || t.fromValue === undefined
+          ? (p.field === 'weight' || p.field === 'video' ? null : '')
+          : (typeof t.fromValue === 'object' ? structuredClone(t.fromValue) : t.fromValue);
+      }
+    },
+    coalesceKey: (p) => `cat-field:${p.field}:${p.name}`,
+  },
+
+  // Remove every instance of a catalog exercise from all routines.
+  // Sessions are preserved (they're historical records). `targets:
+  // [{ routineId, index, exercise }]` captures position + full exercise
+  // for revert.
+  CATALOG_DELETE: {
+    apply: (s, p) => {
+      // Remove from each routine, descending index so splices don't shift.
+      const byRoutine = new Map();
+      for (const t of p.targets) {
+        if (!byRoutine.has(t.routineId)) byRoutine.set(t.routineId, []);
+        byRoutine.get(t.routineId).push(t);
+      }
+      for (const [routineId, ts] of byRoutine) {
+        const r = findRoutine(s, routineId);
+        if (!r) continue;
+        ts.sort((a, b) => b.index - a.index);
+        for (const t of ts) r.exercises.splice(t.index, 1);
+      }
+    },
+    revert: (s, p) => {
+      // Re-insert ascending so each splice lands at the captured index.
+      const byRoutine = new Map();
+      for (const t of p.targets) {
+        if (!byRoutine.has(t.routineId)) byRoutine.set(t.routineId, []);
+        byRoutine.get(t.routineId).push(t);
+      }
+      for (const [routineId, ts] of byRoutine) {
+        const r = findRoutine(s, routineId);
+        if (!r) continue;
+        ts.sort((a, b) => a.index - b.index);
+        for (const t of ts) r.exercises.splice(t.index, 0, structuredClone(t.exercise));
+      }
+    },
+    coalesceKey: (p) => `cat-del:${p.name}`,
   },
 
   MOVE_ROUTINE: {

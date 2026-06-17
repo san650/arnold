@@ -1256,3 +1256,421 @@ button.danger-primary:active { background: #d33b3b; }
   opacity: 0.55;
 }
 .tool-btn svg { display: block; }
+
+/* ---------- App-bar right actions (Dashboard entry) ---------- */
+
+.app-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+.app-bar-actions .tool-btn {
+  min-width: 40px;
+  min-height: 40px;
+  color: var(--fg-dim);
+}
+.app-bar-actions .tool-btn:active { color: var(--accent); }
+
+/* ---------- Dashboard: heatmap ---------- */
+
+.heatmap {
+  display: grid;
+  grid-auto-flow: column;
+  grid-template-rows: repeat(7, 1fr);
+  gap: 3px;
+  padding: 0.875rem 0.5rem 0.5rem;
+  background: linear-gradient(180deg, var(--bg-elev) 0%, rgba(26, 29, 36, 0.6) 100%);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  margin-bottom: 0.625rem;
+}
+.heatmap-cell {
+  aspect-ratio: 1 / 1;
+  border-radius: 2px;
+  background: var(--bg-elev-2);
+  border: 1px solid rgba(58, 65, 80, 0.4);
+}
+.heatmap-cell.lvl-0 { background: rgba(44, 49, 59, 0.55); border-color: rgba(58, 65, 80, 0.3); }
+.heatmap-cell.lvl-1 { background: rgba(255, 107, 26, 0.22); border-color: rgba(255, 107, 26, 0.35); }
+.heatmap-cell.lvl-2 { background: rgba(255, 107, 26, 0.42); border-color: rgba(255, 107, 26, 0.55); }
+.heatmap-cell.lvl-3 { background: rgba(255, 107, 26, 0.68); border-color: rgba(255, 127, 58, 0.7); }
+.heatmap-cell.lvl-4 { background: var(--accent); border-color: var(--accent-hi); box-shadow: 0 0 0 1px rgba(255, 127, 58, 0.35) inset; }
+.heatmap-cell.future { opacity: 0.25; }
+
+.heatmap-legend {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0 0.1rem 0.25rem;
+  margin-bottom: 1rem;
+  font-family: var(--body);
+  font-size: 0.65rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 600;
+}
+.heatmap-legend .heatmap-cell {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  border-radius: 2px;
+}
+
+/* ---------- Dashboard: latest exercises ---------- */
+
+.latest-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.latest-card {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 0.875rem;
+  width: 100%;
+  text-align: left;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.625rem 0.75rem 0.625rem 0.625rem;
+  min-height: 0;
+  font-family: var(--body);
+  font-weight: 400;
+  letter-spacing: 0;
+  color: var(--fg);
+  cursor: pointer;
+  transition: transform 0.06s ease, border-color 0.12s ease, background 0.12s ease;
+}
+.latest-card:active { transform: scale(0.98); border-color: var(--accent-ring); }
+.latest-badge {
+  width: 56px;
+  height: 56px;
+  flex-shrink: 0;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev-2);
+  border: 1px solid var(--line);
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  color: var(--accent);
+}
+.latest-badge-value {
+  font-family: var(--display);
+  font-weight: 800;
+  font-size: 1.15rem;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+}
+.latest-badge-unit {
+  font-family: var(--body);
+  font-size: 0.58rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: var(--accent);
+}
+.latest-body { min-width: 0; }
+.latest-name {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 0.98rem;
+  letter-spacing: -0.01em;
+  line-height: 1.15;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.latest-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 0.18rem;
+  font-family: var(--body);
+  font-size: 0.74rem;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+.latest-meta .dot { color: var(--muted-2); }
+.latest-spark {
+  width: 80px;
+  height: 22px;
+  flex-shrink: 0;
+  color: var(--accent);
+}
+.latest-spark svg { width: 100%; height: 100%; display: block; }
+
+/* ---------- Exercise detail: chart + range toggle ---------- */
+
+.range-toggle {
+  display: inline-flex;
+  gap: 0;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px;
+}
+.range-opt {
+  min-height: 32px;
+  padding: 0 0.7rem;
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  font-family: var(--body);
+  font-weight: 700;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  cursor: pointer;
+}
+.range-opt.on {
+  background: var(--accent);
+  color: #1a0d04;
+}
+
+.detail-chart-wrap {
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.5rem 0.25rem 0.25rem;
+  margin-bottom: 1rem;
+  color: var(--accent);
+}
+.detail-chart {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+.detail-chart .axis { stroke: var(--line-strong); stroke-width: 1; }
+.detail-chart .axis-label {
+  font-family: var(--mono);
+  font-size: 9px;
+  fill: var(--muted);
+  letter-spacing: 0.05em;
+}
+.detail-chart .axis-unit {
+  font-family: var(--body);
+  font-size: 8px;
+  fill: var(--muted);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+.detail-chart .line { stroke: var(--accent); }
+.detail-chart .dot { fill: var(--accent-hi); }
+.detail-chart-empty {
+  padding: 2rem 1rem;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.88rem;
+  background: var(--bg-elev);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius);
+  margin-bottom: 1rem;
+}
+
+/* ---------- Exercise detail: session list ---------- */
+
+.session-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+.session-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  align-items: center;
+  gap: 0.625rem;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 0.55rem 0.75rem;
+}
+.session-date {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.78rem;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+  min-width: 3.5rem;
+}
+.session-routine {
+  font-family: var(--body);
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--fg-dim);
+  letter-spacing: 0;
+}
+.session-weight {
+  font-family: var(--display);
+  font-weight: 800;
+  font-size: 0.85rem;
+  letter-spacing: -0.01em;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.session-sets {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.72rem;
+  color: var(--muted);
+  letter-spacing: 0.05em;
+}
+
+/* ---------- Catalog picker (workout edit FAB) ---------- */
+
+.drawer-catalog .drawer-body { padding-bottom: 1.25rem; }
+.catalog-filter-wrap {
+  position: relative;
+  margin-bottom: 0.625rem;
+}
+.catalog-filter {
+  background: var(--bg-elev-2);
+  border: 1px solid var(--line-strong);
+}
+.catalog-section { margin-top: 0.875rem; margin-bottom: 0.5rem; }
+.catalog-new {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  text-align: left;
+  background: var(--accent-dim);
+  color: var(--fg);
+  border: 1px dashed var(--accent-ring);
+  border-radius: var(--radius-sm);
+  padding: 0.7rem 0.875rem;
+  min-height: 56px;
+  margin-bottom: 0.25rem;
+  cursor: pointer;
+  font-family: var(--body);
+  font-weight: 400;
+  letter-spacing: 0;
+}
+.catalog-new:active { background: rgba(255, 107, 26, 0.28); transform: scale(0.99); }
+.catalog-new-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-xs);
+  background: var(--accent);
+  color: #1a0d04;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--display);
+  font-weight: 800;
+  font-size: 1.15rem;
+  flex-shrink: 0;
+}
+.catalog-new-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.catalog-new-title {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 0.95rem;
+  letter-spacing: -0.01em;
+  color: var(--fg);
+}
+.catalog-new-sub {
+  font-size: 0.74rem;
+  color: var(--accent);
+  letter-spacing: 0.02em;
+}
+
+.catalog-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+.catalog-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  text-align: left;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 0.55rem 0.625rem;
+  min-height: 56px;
+  cursor: pointer;
+  font-family: var(--body);
+  font-weight: 400;
+  letter-spacing: 0;
+  color: var(--fg);
+}
+.catalog-row:active { transform: scale(0.99); border-color: var(--accent-ring); }
+.catalog-badge {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-xs);
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  flex-shrink: 0;
+}
+.catalog-badge-value {
+  font-family: var(--display);
+  font-weight: 800;
+  font-size: 0.95rem;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+}
+.catalog-badge-unit {
+  font-family: var(--body);
+  font-size: 0.5rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: var(--accent);
+}
+.catalog-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.catalog-name {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 0.95rem;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.catalog-meta {
+  font-size: 0.72rem;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.catalog-chev {
+  color: var(--muted);
+  font-size: 1.1rem;
+  flex-shrink: 0;
+}
+
+/* The workout-bar gains a 3rd-column edit button on exercise detail view.
+   Keep the layout consistent (back | title | action). */
+.workout-bar > button.tool-btn:last-child {
+  color: var(--fg-dim);
+  min-width: 40px;
+  min-height: 40px;
+}
+.workout-bar > button.tool-btn:last-child:active { color: var(--accent); }

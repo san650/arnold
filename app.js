@@ -216,6 +216,16 @@ const requestCacheVersion = async () => {
 requestCacheVersion();
 // Transient: "new routine" name-entry drawer (open from the edit list).
 let newRoutineOpen = false;
+// Transient: catalog picker drawer (open from the workout-edit FAB) plus
+// the current filter text. Reset on hashchange.
+let catalogPickerOpen = false;
+let catalogPickerRoutineId = null;
+let catalogFilter = '';
+// Transient: catalog-edit drawer for renaming / re-defaulting a single
+// exercise across all routines. Holds normalized name of the target.
+let catalogEditName = null;
+// Transient: range toggle on exercise detail view.
+let detailRange = '30d';
 // Transient: in-workout stopwatch overlay. Each open starts from zero;
 // tick interval drives a single DOM text node (no store dispatches).
 let stopwatchOpen = false;
@@ -326,8 +336,20 @@ const todayKey = () => {
 
 const uid = () => 'x' + Math.random().toString(36).slice(2, 10);
 
-const sessionFor = (state, date, exerciseId) =>
-  state.doc.sessions[date]?.[exerciseId] ?? [];
+// Session entries: legacy boolean[] OR { sets: boolean[], snapshot }. This
+// helper returns the sets array regardless of shape so set-rendering code
+// doesn't have to branch.
+const sessionFor = (state, date, exerciseId) => {
+  const raw = state.doc.sessions[date]?.[exerciseId];
+  if (!raw) return [];
+  return Array.isArray(raw) ? raw : (raw.sets ?? []);
+};
+
+const sessionSnapshot = (state, date, exerciseId) => {
+  const raw = state.doc.sessions[date]?.[exerciseId];
+  if (!raw || Array.isArray(raw)) return null;
+  return raw.snapshot ?? null;
+};
 
 const countDoneFor = (state, date, routine) => {
   let total = 0, done = 0;
@@ -337,6 +359,177 @@ const countDoneFor = (state, date, routine) => {
     for (let i = 0; i < ex.sets; i++) if (arr[i]) done++;
   }
   return { total, done };
+};
+
+// ---------- Dashboard / catalog aggregation ----------
+
+// Exercises are grouped across routines by their normalized name. Two
+// routines can hold the same lift at different weights; we treat them as one
+// identity for history / catalog purposes.
+const normalizeName = (s) => String(s ?? '').trim().toLowerCase();
+const slugify = (name) => encodeURIComponent(normalizeName(name));
+const unslug = (slug) => { try { return decodeURIComponent(slug); } catch { return slug; } };
+
+const sumDone = (arr) => arr.reduce((n, v) => n + (v ? 1 : 0), 0);
+
+// Map of dateKey → number of sets completed that day. Skips zero-effort days
+// so the heatmap doesn't show ghost cells.
+const dayActivityMap = (state) => {
+  const map = new Map();
+  for (const [date, sess] of Object.entries(state.doc.sessions || {})) {
+    let n = 0;
+    for (const exId of Object.keys(sess)) {
+      n += sumDone(sessionFor(state, date, exId));
+    }
+    if (n > 0) map.set(date, n);
+  }
+  return map;
+};
+
+// Walk routines (the canonical definition source) AND sessions (for history)
+// to build a deduped list of unique exercises keyed by normalized name.
+// Returns: [{ name, displayName, template, lastWeight, lastDate, sessionCount,
+//             usedIn: [{ routineId, routineIndex }] }] sorted by recent use.
+const buildCatalog = (state) => {
+  const groups = new Map();
+
+  const touch = (key, partial) => {
+    const cur = groups.get(key);
+    if (cur) {
+      if (partial.template && !cur.template) cur.template = partial.template;
+      if (partial.usedIn) {
+        for (const u of partial.usedIn) {
+          if (!cur.usedIn.some((x) => x.routineId === u.routineId)) cur.usedIn.push(u);
+        }
+      }
+      if (partial.lastDate && (!cur.lastDate || partial.lastDate > cur.lastDate)) {
+        cur.lastDate = partial.lastDate;
+        if (partial.lastWeight !== undefined) cur.lastWeight = partial.lastWeight;
+      }
+      if (partial.sessionCount) cur.sessionCount += partial.sessionCount;
+    } else {
+      groups.set(key, {
+        name: key,
+        displayName: partial.displayName ?? key,
+        template: partial.template ?? null,
+        lastWeight: partial.lastWeight ?? null,
+        lastDate: partial.lastDate ?? null,
+        sessionCount: partial.sessionCount ?? 0,
+        usedIn: partial.usedIn ? [...partial.usedIn] : [],
+      });
+    }
+  };
+
+  state.doc.routines.forEach((r, idx) => {
+    for (const ex of r.exercises) {
+      const key = normalizeName(ex.name);
+      if (!key) continue;
+      touch(key, {
+        displayName: ex.name,
+        template: ex,
+        usedIn: [{ routineId: r.id, routineIndex: idx }],
+        lastWeight: ex.weight ?? null,
+      });
+    }
+  });
+
+  for (const [date, sess] of Object.entries(state.doc.sessions || {})) {
+    for (const exId of Object.keys(sess)) {
+      const arr = sessionFor(state, date, exId);
+      const done = sumDone(arr);
+      if (done === 0) continue;
+      const snap = sessionSnapshot(state, date, exId);
+      let displayName = snap?.name;
+      if (!displayName) {
+        const found = findExerciseInState(state, exId);
+        displayName = found?.exercise.name;
+      }
+      if (!displayName) continue;
+      const key = normalizeName(displayName);
+      touch(key, {
+        displayName,
+        lastDate: date,
+        lastWeight: snap?.weight ?? null,
+        sessionCount: 1,
+      });
+    }
+  }
+
+  return [...groups.values()].sort((a, b) => {
+    if (a.lastDate && b.lastDate) return a.lastDate < b.lastDate ? 1 : -1;
+    if (a.lastDate) return -1;
+    if (b.lastDate) return 1;
+    return a.displayName.localeCompare(b.displayName);
+  });
+};
+
+// Per-exercise sessions: chronological list (oldest first) for one
+// normalized name. Each row has the data the detail view needs.
+const buildExerciseHistory = (state, normName) => {
+  const rows = [];
+  for (const [date, sess] of Object.entries(state.doc.sessions || {})) {
+    for (const exId of Object.keys(sess)) {
+      const arr = sessionFor(state, date, exId);
+      const done = sumDone(arr);
+      if (done === 0) continue;
+      const snap = sessionSnapshot(state, date, exId);
+      let displayName = snap?.name;
+      let routineId = snap?.routineId;
+      let routineIndex = -1;
+      if (!displayName) {
+        const found = findExerciseInState(state, exId);
+        if (found) {
+          displayName = found.exercise.name;
+          routineId = found.routine.id;
+          routineIndex = state.doc.routines.findIndex((r) => r.id === found.routine.id);
+        }
+      } else if (routineId) {
+        routineIndex = state.doc.routines.findIndex((r) => r.id === routineId);
+      }
+      if (!displayName) continue;
+      if (normalizeName(displayName) !== normName) continue;
+      rows.push({
+        date,
+        exerciseId: exId,
+        routineId,
+        routineIndex,
+        displayName,
+        weight: snap?.weight ?? null,
+        duration: snap?.duration ?? '',
+        reps: snap?.reps ?? '',
+        kind: snap?.kind ?? 'reps',
+        setsDone: done,
+        setsTotal: arr.length,
+      });
+    }
+  }
+  rows.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  return rows;
+};
+
+// Spanish short date label used across dashboard surfaces.
+const MONTHS_ES_SHORT = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+const fmtShortDate = (dateKey) => {
+  const [y, m, d] = dateKey.split('-').map(Number);
+  return `${d} ${MONTHS_ES_SHORT[m - 1]}`;
+};
+const fmtRelDay = (dateKey) => {
+  const today = todayKey();
+  if (dateKey === today) return 'hoy';
+  // Compute calendar-day delta independent of timezone math: parse both as
+  // UTC midnight and subtract days.
+  const a = Date.UTC(...dateKey.split('-').map((n, i) => i === 1 ? Number(n) - 1 : Number(n)));
+  const b = Date.UTC(...today.split('-').map((n, i) => i === 1 ? Number(n) - 1 : Number(n)));
+  const days = Math.round((b - a) / 86400000);
+  if (days === 1) return 'ayer';
+  if (days < 7) return `hace ${days} d`;
+  if (days < 30) return `hace ${Math.floor(days / 7)} sem`;
+  return fmtShortDate(dateKey);
+};
+
+const fmtWeight = (w) => {
+  if (!w || w.value === '' || w.value == null) return null;
+  return `${w.value} ${w.unit}`;
 };
 
 // ---------- routing ----------
@@ -356,6 +549,14 @@ const parseRoute = () => {
   if (parts[0] === 'edit') return { name: 'edit' };
   if (parts[0] === 'log') return { name: 'log' };
   if (parts[0] === 'motivation') return { name: 'motivation' };
+  if (parts[0] === 'dashboard') {
+    if (parts[1] === 'ex' && parts[2]) {
+      const r = { name: 'exercise', slug: parts[2] };
+      if (parts[3] === 'edit') r.editMode = true;
+      return r;
+    }
+    return { name: 'dashboard' };
+  }
   return { name: 'home' };
 };
 
@@ -369,6 +570,9 @@ const iconRedo = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" st
 const iconKebab = `<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="12" cy="19" r="1.7"/></svg>`;
 const iconBack = `<svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>`;
 const iconStopwatch = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="14" r="7"/><polyline points="12 11 12 14 14.5 14"/><line x1="10" y1="3" x2="14" y2="3"/><line x1="12" y1="3" x2="12" y2="5"/></svg>`;
+// Compact bar-chart glyph — ascending columns, used to enter the dashboard.
+const iconChart = `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="3" y1="20" x2="21" y2="20"/><rect x="5" y="13" width="3" height="6" rx="0.5"/><rect x="10.5" y="9" width="3" height="10" rx="0.5"/><rect x="16" y="5" width="3" height="14" rx="0.5"/></svg>`;
+const iconEdit = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4l6 6"/><path d="M3 21l4-1 11.5-11.5-3-3L4 17l-1 4z"/></svg>`;
 const backBtn = (href, label = 'Volver al inicio') =>
   `<button class="back-btn" data-go="${esc(href)}" aria-label="${esc(label)}">${iconBack}</button>`;
 
@@ -508,6 +712,9 @@ const renderHome = (state) => {
         ${logoSvg}
         <h1 class="app-title" data-tap-title>Arnold</h1>
       </div>
+      <div class="app-bar-actions">
+        <button class="tool-btn" data-go="#/dashboard" aria-label="Progreso">${iconChart}</button>
+      </div>
     </header>
     <div class="section">
       <span class="label">Rutinas</span>
@@ -568,6 +775,12 @@ const describeCommand = (cmd, state) => {
       return `Eliminaste la rutina "${p.routine.name}"`;
     case 'MOVE_ROUTINE':
       return `Reordenaste rutinas`;
+    case 'CATALOG_RENAME':
+      return `Renombraste "${p.targets[0]?.fromValue ?? ''}" a "${p.toName}" en ${p.targets.length} rutina${p.targets.length === 1 ? '' : 's'}`;
+    case 'CATALOG_UPDATE_FIELD':
+      return `Actualizaste ${p.field} de "${p.name}" en ${p.targets.length} rutina${p.targets.length === 1 ? '' : 's'}`;
+    case 'CATALOG_DELETE':
+      return `Eliminaste "${p.name}" de ${p.targets.length} rutina${p.targets.length === 1 ? '' : 's'}`;
     default:
       return cmd.type;
   }
@@ -623,6 +836,17 @@ const renderMenuSheet = () => `
           <span class="menu-text">
             <span class="menu-title">Importar</span>
             <span class="menu-sub">Reemplazá todo desde un archivo</span>
+          </span>
+        </button>
+      </li>
+      <li>
+        <button class="menu-item" data-go="#/dashboard">
+          <span class="menu-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="20" x2="21" y2="20"/><rect x="5" y="13" width="3" height="6" rx="0.5"/><rect x="10.5" y="9" width="3" height="10" rx="0.5"/><rect x="16" y="5" width="3" height="14" rx="0.5"/></svg>
+          </span>
+          <span class="menu-text">
+            <span class="menu-title">Progreso</span>
+            <span class="menu-sub">Calendario y ejercicios usados</span>
           </span>
         </button>
       </li>
@@ -938,6 +1162,417 @@ const renderDrawer = (routine, ex) => {
   `;
 };
 
+// ---------- Dashboard ----------
+
+const HEATMAP_WEEKS = 14;
+
+// Build a 7×HEATMAP_WEEKS grid (rows = weekday, cols = week) of cells
+// ending at the current week (Monday-start). Each cell has a date key and
+// an intensity level 0..4 based on sets done that day.
+const renderHeatmap = (state) => {
+  const activity = dayActivityMap(state);
+  const maxIntensity = Math.max(1, ...activity.values());
+  const today = new Date();
+  // Anchor to Monday of the current week (Lunes-start to feel European).
+  const dow = (today.getDay() + 6) % 7;
+  const monday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - dow);
+
+  const cells = [];
+  // Render row-major so reading order matches: row=weekday (Mon..Sun),
+  // col=week (oldest..current). The grid uses CSS to flip to columns.
+  for (let row = 0; row < 7; row++) {
+    for (let col = 0; col < HEATMAP_WEEKS; col++) {
+      const offsetDays = -((HEATMAP_WEEKS - 1 - col) * 7) + row;
+      const d = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + offsetDays);
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      const key = `${y}-${m}-${day}`;
+      const n = activity.get(key) ?? 0;
+      let lvl = 0;
+      if (n > 0) {
+        const ratio = n / maxIntensity;
+        lvl = ratio > 0.75 ? 4 : ratio > 0.5 ? 3 : ratio > 0.25 ? 2 : 1;
+      }
+      const future = d > today;
+      cells.push(`<div class="heatmap-cell lvl-${lvl}${future ? ' future' : ''}"
+        data-date="${esc(key)}" title="${esc(key)} · ${n} series"></div>`);
+    }
+  }
+
+  return `
+    <div class="heatmap" style="grid-template-columns:repeat(${HEATMAP_WEEKS},1fr)">${cells.join('')}</div>
+    <div class="heatmap-legend">
+      <span>menos</span>
+      <div class="heatmap-cell lvl-0"></div>
+      <div class="heatmap-cell lvl-1"></div>
+      <div class="heatmap-cell lvl-2"></div>
+      <div class="heatmap-cell lvl-3"></div>
+      <div class="heatmap-cell lvl-4"></div>
+      <span>más</span>
+    </div>`;
+};
+
+// Tiny SVG sparkline for the latest-exercises cards. Pads to a fixed range
+// so flat histories don't collapse to a degenerate line.
+const renderSparkline = (history) => {
+  const points = history
+    .map((row) => fmtWeight(row.weight) ? Number(row.weight.value) : null)
+    .filter((n) => Number.isFinite(n));
+  if (points.length === 0) {
+    return `<svg class="spark" viewBox="0 0 80 22" aria-hidden="true"><line x1="0" y1="11" x2="80" y2="11" stroke="currentColor" stroke-opacity="0.18" stroke-width="1.5" stroke-dasharray="3 3"/></svg>`;
+  }
+  const max = Math.max(...points);
+  const min = Math.min(...points);
+  const range = Math.max(1, max - min);
+  const last = points.slice(-12);
+  const stepX = last.length > 1 ? 80 / (last.length - 1) : 0;
+  const coords = last.map((v, i) => {
+    const x = (i * stepX).toFixed(1);
+    const y = (20 - ((v - min) / range) * 18).toFixed(1);
+    return `${x},${y}`;
+  }).join(' ');
+  const lastX = last.length > 1 ? (80).toFixed(1) : '40';
+  const lastY = (20 - ((last[last.length - 1] - min) / range) * 18).toFixed(1);
+  return `
+    <svg class="spark" viewBox="0 0 80 22" aria-hidden="true">
+      <polyline points="${coords}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="${lastX}" cy="${lastY}" r="2" fill="currentColor"/>
+    </svg>`;
+};
+
+const renderDashboard = (state) => {
+  const activity = dayActivityMap(state);
+  const trainedDays = activity.size;
+
+  const catalog = buildCatalog(state).filter((c) => c.lastDate);
+  const cards = catalog.slice(0, 24).map((c) => {
+    const history = buildExerciseHistory(state, c.name);
+    const weightLabel = fmtWeight(c.lastWeight) ?? '—';
+    return `
+      <button class="latest-card" data-go="#/dashboard/ex/${esc(slugify(c.displayName))}">
+        <div class="latest-badge">
+          <span class="latest-badge-value">${esc(c.lastWeight?.value ?? '—')}</span>
+          <span class="latest-badge-unit">${esc(c.lastWeight?.unit ?? '')}</span>
+        </div>
+        <div class="latest-body">
+          <div class="latest-name">${esc(c.displayName)}</div>
+          <div class="latest-meta">
+            <span>${esc(fmtRelDay(c.lastDate))}</span>
+            <span class="dot" aria-hidden="true">·</span>
+            <span>${c.sessionCount} ${c.sessionCount === 1 ? 'sesión' : 'sesiones'}</span>
+          </div>
+        </div>
+        <div class="latest-spark">${renderSparkline(history)}</div>
+      </button>`;
+  }).join('');
+
+  const empty = catalog.length === 0
+    ? `<div class="empty-state">
+         <div class="empty-icon" aria-hidden="true">▦</div>
+         <p>Todavía no marcaste ninguna serie. Cuando registres tu primer entrenamiento vas a ver tu progreso acá.</p>
+       </div>`
+    : '';
+
+  return `
+    <header class="workout-bar">
+      ${backBtn('#/')}
+      <div class="title-block">
+        <div class="title">Progreso</div>
+        <div class="sub">${trainedDays} ${trainedDays === 1 ? 'día entrenado' : 'días entrenados'}</div>
+      </div>
+      <span></span>
+    </header>
+    <div class="section">
+      <span class="label">Actividad</span>
+      <span class="count">${String(trainedDays).padStart(2, '0')}</span>
+    </div>
+    ${renderHeatmap(state)}
+    <div class="section">
+      <span class="label">Últimos ejercicios</span>
+      <span class="count">${String(catalog.length).padStart(2, '0')}</span>
+    </div>
+    ${empty}
+    <div class="latest-list">${cards}</div>
+    ${bottomBar(state)}
+  `;
+};
+
+// ---------- Exercise detail ----------
+
+const renderChart = (rows) => {
+  const weighted = rows.filter((r) => r.weight && Number.isFinite(Number(r.weight.value)));
+  if (weighted.length === 0) {
+    return `<div class="detail-chart-empty">Todavía no hay pesos registrados para este ejercicio.</div>`;
+  }
+  const values = weighted.map((r) => Number(r.weight.value));
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max === min ? Math.max(1, max * 0.1) : (max - min);
+  const padTop = 14;
+  const padBottom = 28;
+  const padLeft = 38;
+  const padRight = 12;
+  const w = 360;
+  const h = 180;
+  const innerW = w - padLeft - padRight;
+  const innerH = h - padTop - padBottom;
+  const firstDate = weighted[0].date;
+  const lastDate = weighted[weighted.length - 1].date;
+  const dateToX = (date) => {
+    if (firstDate === lastDate) return padLeft + innerW / 2;
+    const a = Date.parse(firstDate);
+    const b = Date.parse(lastDate);
+    const t = (Date.parse(date) - a) / (b - a);
+    return padLeft + t * innerW;
+  };
+  const valueToY = (v) => padTop + (1 - (v - min) / range) * innerH;
+  const points = weighted.map((r) => {
+    return `${dateToX(r.date).toFixed(1)},${valueToY(Number(r.weight.value)).toFixed(1)}`;
+  });
+  const lineD = points.join(' ');
+  const area = `M ${points[0]} L ${points.join(' L ')} L ${(padLeft + innerW).toFixed(1)},${(padTop + innerH).toFixed(1)} L ${padLeft.toFixed(1)},${(padTop + innerH).toFixed(1)} Z`;
+  const unit = weighted[weighted.length - 1].weight.unit;
+  const dotMarkup = weighted.map((r) => {
+    const cx = dateToX(r.date).toFixed(1);
+    const cy = valueToY(Number(r.weight.value)).toFixed(1);
+    return `<circle cx="${cx}" cy="${cy}" r="2.6" class="dot"/>`;
+  }).join('');
+
+  return `
+    <svg class="detail-chart" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true">
+      <defs>
+        <linearGradient id="chart-fill" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="currentColor" stop-opacity="0.28"/>
+          <stop offset="1" stop-color="currentColor" stop-opacity="0"/>
+        </linearGradient>
+      </defs>
+      <line x1="${padLeft}" y1="${(padTop + innerH).toFixed(1)}" x2="${(padLeft + innerW).toFixed(1)}" y2="${(padTop + innerH).toFixed(1)}" class="axis"/>
+      <text x="${padLeft - 6}" y="${padTop + 4}" class="axis-label" text-anchor="end">${esc(max)}</text>
+      <text x="${padLeft - 6}" y="${(padTop + innerH).toFixed(1)}" class="axis-label" text-anchor="end">${esc(min)}</text>
+      <text x="${padLeft}" y="${h - 8}" class="axis-label" text-anchor="start">${esc(fmtShortDate(firstDate))}</text>
+      <text x="${(padLeft + innerW).toFixed(1)}" y="${h - 8}" class="axis-label" text-anchor="end">${esc(fmtShortDate(lastDate))}</text>
+      <path d="${area}" fill="url(#chart-fill)"/>
+      <polyline points="${lineD}" fill="none" class="line" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+      ${dotMarkup}
+      <text x="${(w - padRight).toFixed(1)}" y="${padTop + 4}" class="axis-unit" text-anchor="end">${esc(unit)}</text>
+    </svg>`;
+};
+
+const renderExerciseDetail = (state, slug, editMode) => {
+  const normName = normalizeName(unslug(slug));
+  const all = buildExerciseHistory(state, normName);
+  if (all.length === 0 && !buildCatalog(state).some((c) => c.name === normName)) {
+    // Unknown slug — bounce to dashboard rather than render an empty page.
+    return renderDashboard(state);
+  }
+  const catalogEntry = buildCatalog(state).find((c) => c.name === normName);
+  const displayName = catalogEntry?.displayName ?? unslug(slug);
+
+  let filtered = all;
+  if (detailRange === '30d') {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - 30);
+    const cutoffKey = `${cutoff.getFullYear()}-${String(cutoff.getMonth() + 1).padStart(2, '0')}-${String(cutoff.getDate()).padStart(2, '0')}`;
+    filtered = all.filter((r) => r.date >= cutoffKey);
+  }
+
+  const sessions = [...filtered].reverse();
+  const sessionItems = sessions.map((r) => {
+    const routine = r.routineId ? state.doc.routines.find((x) => x.id === r.routineId) : null;
+    const routineIdx = routine ? state.doc.routines.findIndex((x) => x.id === routine.id) : -1;
+    const routineLabel = routine ? `Día ${dayNum(routineIdx)}` : '—';
+    const weightLabel = fmtWeight(r.weight) ?? (r.duration || '—');
+    return `
+      <li class="session-row">
+        <span class="session-date">${esc(fmtShortDate(r.date))}</span>
+        <span class="session-routine">${esc(routineLabel)}</span>
+        <span class="session-weight">${esc(weightLabel)}</span>
+        <span class="session-sets mono">${r.setsDone}/${r.setsTotal}</span>
+      </li>`;
+  }).join('');
+
+  const drawer = editMode && catalogEntry
+    ? renderCatalogEditDrawer(state, catalogEntry)
+    : '';
+
+  return `
+    <header class="workout-bar">
+      ${backBtn('#/dashboard', 'Volver al progreso')}
+      <div class="title-block">
+        <div class="title">${esc(displayName)}</div>
+        <div class="sub">${sessions.length} ${sessions.length === 1 ? 'sesión' : 'sesiones'}${catalogEntry?.usedIn?.length ? ` · ${catalogEntry.usedIn.length} ${catalogEntry.usedIn.length === 1 ? 'rutina' : 'rutinas'}` : ''}</div>
+      </div>
+      <button class="tool-btn" data-go="#/dashboard/ex/${esc(slug)}/edit" aria-label="Editar ejercicio">${iconEdit}</button>
+    </header>
+
+    <div class="section">
+      <span class="label">Progreso</span>
+      <div class="range-toggle" role="tablist">
+        <button class="range-opt ${detailRange === '30d' ? 'on' : ''}" data-detail-range="30d" role="tab" aria-selected="${detailRange === '30d'}">30 días</button>
+        <button class="range-opt ${detailRange === 'all' ? 'on' : ''}" data-detail-range="all" role="tab" aria-selected="${detailRange === 'all'}">Todo</button>
+      </div>
+    </div>
+    <div class="detail-chart-wrap">${renderChart(filtered)}</div>
+
+    <div class="section">
+      <span class="label">Sesiones</span>
+      <span class="count">${String(sessions.length).padStart(2, '0')}</span>
+    </div>
+    ${sessions.length === 0
+      ? `<p class="muted small" style="padding:1rem 0.25rem">Sin sesiones en este rango.</p>`
+      : `<ul class="session-list">${sessionItems}</ul>`}
+
+    ${drawer}
+    ${bottomBar(state)}
+  `;
+};
+
+// ---------- Catalog picker (workout edit FAB) ----------
+
+const renderCatalogSheet = (state) => {
+  const routineId = catalogPickerRoutineId;
+  const routine = state.doc.routines.find((r) => r.id === routineId);
+  if (!routine) return '';
+
+  const filter = normalizeName(catalogFilter);
+  const items = buildCatalog(state)
+    .filter((c) => !filter || c.name.includes(filter))
+    .map((c) => {
+      const usedLabels = c.usedIn
+        .map((u) => `Día ${dayNum(u.routineIndex)}`)
+        .join(' + ');
+      const w = fmtWeight(c.lastWeight);
+      const meta = [w, usedLabels].filter(Boolean).join(' · ');
+      return `
+        <li>
+          <button class="catalog-row" data-pick-catalog data-name="${esc(c.displayName)}">
+            <span class="catalog-badge">
+              <span class="catalog-badge-value">${esc(c.lastWeight?.value ?? '·')}</span>
+              <span class="catalog-badge-unit">${esc(c.lastWeight?.unit ?? '')}</span>
+            </span>
+            <span class="catalog-text">
+              <span class="catalog-name">${esc(c.displayName)}</span>
+              <span class="catalog-meta">${esc(meta || 'sin uso aún')}</span>
+            </span>
+            <span class="catalog-chev" aria-hidden="true">›</span>
+          </button>
+        </li>`;
+    }).join('');
+
+  return `
+    <div class="drawer-backdrop" data-close-catalog></div>
+    <aside class="drawer drawer-catalog" role="dialog" aria-modal="true" aria-label="Agregar ejercicio">
+      <div class="drawer-handle" aria-hidden="true"></div>
+      <div class="drawer-header">
+        <h3>Agregar ejercicio</h3>
+        <button class="icon-btn" data-close-catalog aria-label="Cerrar">✕</button>
+      </div>
+      <div class="drawer-body">
+        <div class="catalog-filter-wrap">
+          <input type="text" id="catalog-filter" class="catalog-filter"
+                 placeholder="Buscar ejercicio…" autocomplete="off"
+                 value="${esc(catalogFilter)}" />
+        </div>
+        <button class="catalog-new" data-add-exercise-blank data-routine="${esc(routine.id)}">
+          <span class="catalog-new-icon" aria-hidden="true">＋</span>
+          <span class="catalog-new-text">
+            <span class="catalog-new-title">Crear ejercicio nuevo</span>
+            <span class="catalog-new-sub">Empezar desde cero</span>
+          </span>
+        </button>
+        <div class="section catalog-section">
+          <span class="label">Del catálogo</span>
+          <span class="count">${String(buildCatalog(state).length).padStart(2, '0')}</span>
+        </div>
+        ${items
+          ? `<ul class="catalog-list">${items}</ul>`
+          : `<p class="muted small" style="padding:0.5rem 0.25rem">No hay ejercicios que coincidan.</p>`}
+      </div>
+    </aside>
+  `;
+};
+
+// ---------- Catalog edit drawer ----------
+
+const renderCatalogEditDrawer = (state, catalogEntry) => {
+  const template = catalogEntry.template ?? { kind: 'reps', sets: 3, reps: '', duration: '', weight: null, video: '', notes: '' };
+  const kind = exKind(template);
+  const w = catalogEntry.lastWeight ?? template.weight ?? { value: '', unit: 'kg' };
+  const usedCount = catalogEntry.usedIn.length;
+  return `
+    <div class="drawer-backdrop" data-close-catalog-edit></div>
+    <aside class="drawer" role="dialog" aria-modal="true" aria-label="Editar ejercicio del catálogo">
+      <div class="drawer-handle" aria-hidden="true"></div>
+      <div class="drawer-header">
+        <h3>Editar ejercicio</h3>
+        <button class="icon-btn" data-close-catalog-edit aria-label="Cerrar">✕</button>
+      </div>
+      <div class="drawer-body">
+        <p class="edit-hint">Los cambios se aplican a las <em>${usedCount}</em> rutina${usedCount === 1 ? '' : 's'} que usan este ejercicio.</p>
+        <div class="field">
+          <label>Nombre</label>
+          <input type="text" data-cat-update name="name" value="${esc(catalogEntry.displayName)}" />
+        </div>
+        <div class="field">
+          <label>Tipo</label>
+          <select data-cat-update name="kind">
+            <option value="reps" ${kind === 'reps' ? 'selected' : ''}>Repeticiones</option>
+            <option value="time" ${kind === 'time' ? 'selected' : ''}>Tiempo (cardio)</option>
+          </select>
+        </div>
+        <div class="row">
+          <div class="field" style="flex:1">
+            <label>Series</label>
+            <input type="number" min="1" max="20" inputmode="numeric"
+                   data-cat-update name="sets" value="${esc(template.sets ?? 3)}" />
+          </div>
+          <div class="field" style="flex:2">
+            ${kind === 'time' ? `
+              <label>Duración</label>
+              <input type="text" data-cat-update name="duration" value="${esc(template.duration ?? '')}"
+                     placeholder="30 min" />
+            ` : `
+              <label>Reps</label>
+              <input type="text" data-cat-update name="reps" value="${esc(template.reps ?? '')}"
+                     placeholder="8-12" />
+            `}
+          </div>
+        </div>
+        <div class="field">
+          <label>Peso por defecto</label>
+          <div class="row weight-row">
+            <input type="number" inputmode="decimal" step="0.5"
+                   data-cat-weight-value value="${esc(w.value ?? '')}"
+                   placeholder="0" style="flex:1" />
+            <select data-cat-weight-unit>
+              <option value="kg" ${(w.unit ?? 'kg') === 'kg' ? 'selected' : ''}>kg</option>
+              <option value="lb" ${w.unit === 'lb' ? 'selected' : ''}>lb</option>
+            </select>
+          </div>
+        </div>
+        <div class="field">
+          <label>Imagen o video (URL)</label>
+          <input type="text" data-cat-update name="video" value="${esc(template.video ?? '')}"
+                 placeholder="https://youtu.be/..." />
+        </div>
+        <div class="field">
+          <label>Notas</label>
+          <input type="text" data-cat-update name="notes" value="${esc(template.notes ?? '')}" />
+        </div>
+        <div class="bottom-action">
+          <button class="primary" data-close-catalog-edit>Listo</button>
+        </div>
+        <div class="bottom-action">
+          <button class="danger" data-delete-catalog data-name="${esc(catalogEntry.displayName)}">
+            Eliminar ejercicio del catálogo
+          </button>
+        </div>
+      </div>
+    </aside>
+  `;
+};
+
 const renderEdit = (state) => {
   const items = state.doc.routines.map((r, i) => `
     <div class="edit-row" data-reorder-index="${i}" data-routine-id="${esc(r.id)}">
@@ -987,18 +1622,28 @@ const render = (state) => {
   state._redo = store.canRedo();
 
   const route = parseRoute();
+  // The catalog-edit drawer's bulk dispatchers read `catalogEditName` to
+  // know which exercise's instances to update. Keep it in sync with the
+  // route so navigation alone is enough state.
+  catalogEditName = (route.name === 'exercise' && route.editMode)
+    ? normalizeName(unslug(route.slug))
+    : null;
   let html;
   if (route.name === 'workout') html = renderWorkout(state, route.routineId, route.editExerciseId, !!route.editMode);
   else if (route.name === 'edit') html = renderEdit(state);
   else if (route.name === 'log') html = renderLog(state);
   else if (route.name === 'motivation') html = renderMotivation(state);
+  else if (route.name === 'dashboard') html = renderDashboard(state);
+  else if (route.name === 'exercise') html = renderExerciseDetail(state, route.slug, !!route.editMode);
   else html = renderHome(state);
 
   if (menuOpen) html += renderMenuSheet();
   if (newRoutineOpen) html += renderNewRoutineSheet();
   if (stopwatchOpen) html += renderStopwatchSheet();
+  if (catalogPickerOpen) html += renderCatalogSheet(state);
 
-  const drawerOpen = (route.name === 'workout' && !!route.editExerciseId) || menuOpen || newRoutineOpen || stopwatchOpen;
+  const exerciseEditDrawerOpen = route.name === 'exercise' && !!route.editMode;
+  const drawerOpen = (route.name === 'workout' && !!route.editExerciseId) || menuOpen || newRoutineOpen || stopwatchOpen || catalogPickerOpen || exerciseEditDrawerOpen;
   const suppressDrawerAnim = drawerOpen && lastDrawerOpen;
 
   const routeKey = JSON.stringify(route);
@@ -1034,6 +1679,17 @@ const render = (state) => {
       requestAnimationFrame(() => input.focus());
     }
   }
+  // Same idea for the catalog picker's search box. Skip on mobile (where
+  // showing the keyboard immediately is jarring) — caret only.
+  if (catalogPickerOpen) {
+    const input = document.getElementById('catalog-filter');
+    if (input && document.activeElement !== input && catalogFilter) {
+      requestAnimationFrame(() => {
+        input.focus({ preventScroll: true });
+        try { input.setSelectionRange(input.value.length, input.value.length); } catch {}
+      });
+    }
+  }
 
   // Wire drag-to-reorder on any list flagged with data-reorder-list.
   const list = root.querySelector('[data-reorder-list]');
@@ -1065,6 +1721,17 @@ const render = (state) => {
         render(store.state);
       } else if (bd.hasAttribute('data-close-stopwatch')) {
         closeStopwatch();
+      } else if (bd.hasAttribute('data-close-catalog')) {
+        catalogPickerOpen = false;
+        catalogPickerRoutineId = null;
+        catalogFilter = '';
+        render(store.state);
+      } else if (bd.hasAttribute('data-close-catalog-edit')) {
+        const route = parseRoute();
+        if (route.name === 'exercise' && route.editMode) {
+          if (history.length > 1) history.back();
+          else go(`#/dashboard/ex/${route.slug}`);
+        }
       } else if (bd.hasAttribute('data-close-drawer')) {
         const route = parseRoute();
         if (route.name === 'workout' && route.editExerciseId) {
@@ -1172,7 +1839,7 @@ const importConfig = async () => {
 // ---------- event delegation ----------
 
 const onClick = async (e) => {
-  const t = e.target.closest('[data-go],[data-done],[data-undo],[data-redo],[data-toggle-set],[data-toggle-media],[data-clear-sets],[data-add-routine],[data-add-exercise],[data-remove-exercise],[data-remove-routine],[data-reset],[data-edit-exercise],[data-close-drawer],[data-menu],[data-close-menu],[data-export],[data-import],[data-cancel-new-routine],[data-stopwatch],[data-close-stopwatch]');
+  const t = e.target.closest('[data-go],[data-done],[data-undo],[data-redo],[data-toggle-set],[data-toggle-media],[data-clear-sets],[data-add-routine],[data-add-exercise],[data-add-exercise-blank],[data-remove-exercise],[data-remove-routine],[data-reset],[data-edit-exercise],[data-close-drawer],[data-menu],[data-close-menu],[data-export],[data-import],[data-cancel-new-routine],[data-stopwatch],[data-close-stopwatch],[data-close-catalog],[data-pick-catalog],[data-close-catalog-edit],[data-detail-range],[data-delete-catalog]');
   if (!t) return;
 
   if (t.hasAttribute('data-go')) {
@@ -1257,8 +1924,25 @@ const onClick = async (e) => {
     const exerciseId = t.dataset.exercise;
     const setIndex = Number(t.dataset.index);
     const from = t.dataset.from === '1';
+    const date = todayKey();
+    const to = !from;
+    // Snapshot only refreshes on completion (false → true). Toggling off
+    // preserves the existing snapshot so undo behaves predictably.
+    const found = findExerciseInState(store.state, exerciseId);
+    const fromSnapshot = sessionSnapshot(store.state, date, exerciseId);
+    const snapshot = to && found
+      ? {
+          name: found.exercise.name,
+          kind: exKind(found.exercise),
+          weight: found.exercise.weight ? { ...found.exercise.weight } : null,
+          duration: found.exercise.duration || '',
+          reps: found.exercise.reps || '',
+          routineId: found.routine.id,
+        }
+      : undefined;
     store.dispatch(makeCommand('TOGGLE_SET', {
-      date: todayKey(), exerciseId, setIndex, from, to: !from,
+      date, exerciseId, setIndex, from, to,
+      ...(snapshot !== undefined ? { snapshot, fromSnapshot } : {}),
     }));
     return;
   }
@@ -1290,6 +1974,18 @@ const onClick = async (e) => {
     return;
   }
   if (t.hasAttribute('data-add-exercise')) {
+    // Open the catalog picker so the user can either pick from existing
+    // exercises (faster) or create a blank one.
+    const routineId = t.dataset.routine;
+    const r = store.state.doc.routines.find((x) => x.id === routineId);
+    if (!r) return;
+    catalogPickerOpen = true;
+    catalogPickerRoutineId = routineId;
+    catalogFilter = '';
+    render(store.state);
+    return;
+  }
+  if (t.hasAttribute('data-add-exercise-blank')) {
     const routineId = t.dataset.routine;
     const r = store.state.doc.routines.find((x) => x.id === routineId);
     if (!r) return;
@@ -1301,10 +1997,93 @@ const onClick = async (e) => {
     store.dispatch(makeCommand('ADD_EXERCISE', {
       routineId, index: r.exercises.length, exercise,
     }));
-    // Always open the drawer on the new exercise — closing it (history.back)
-    // returns the user to whichever view they were on (edit-routine,
-    // workout normal, workout edit).
+    catalogPickerOpen = false;
+    catalogPickerRoutineId = null;
     go(`#/workout/${routineId}/edit/${exercise.id}`);
+    return;
+  }
+  if (t.hasAttribute('data-pick-catalog')) {
+    const routineId = catalogPickerRoutineId;
+    const r = store.state.doc.routines.find((x) => x.id === routineId);
+    if (!r) return;
+    const name = t.dataset.name;
+    const cat = buildCatalog(store.state).find((c) => c.name === normalizeName(name));
+    const template = cat?.template;
+    const exercise = template ? {
+      id: uid(),
+      name: cat.displayName,
+      kind: exKind(template),
+      sets: template.sets ?? 3,
+      reps: template.reps ?? '',
+      duration: template.duration ?? '',
+      // Pre-fill weight from latest known. The user can customize it in the
+      // edit drawer right after — this satisfies the "same exercise,
+      // different weights per routine" use case.
+      weight: cat.lastWeight ? { ...cat.lastWeight } : (template.weight ? { ...template.weight } : null),
+      video: template.video ?? null,
+      notes: template.notes ?? '',
+    } : {
+      id: uid(), name: name || 'Nuevo ejercicio',
+      kind: 'reps', sets: 3, reps: '8-12', duration: '',
+      weight: null, video: null, notes: '',
+    };
+    store.dispatch(makeCommand('ADD_EXERCISE', {
+      routineId, index: r.exercises.length, exercise,
+    }));
+    catalogPickerOpen = false;
+    catalogPickerRoutineId = null;
+    catalogFilter = '';
+    go(`#/workout/${routineId}/edit/${exercise.id}`);
+    return;
+  }
+  if (t.hasAttribute('data-close-catalog')) {
+    catalogPickerOpen = false;
+    catalogPickerRoutineId = null;
+    catalogFilter = '';
+    render(store.state);
+    return;
+  }
+  if (t.hasAttribute('data-close-catalog-edit')) {
+    const route = parseRoute();
+    if (route.name === 'exercise' && route.editMode) {
+      if (history.length > 1) history.back();
+      else go(`#/dashboard/ex/${route.slug}`);
+    }
+    return;
+  }
+  if (t.hasAttribute('data-detail-range')) {
+    const r = t.dataset.detailRange;
+    if (r !== detailRange) {
+      detailRange = r;
+      render(store.state);
+    }
+    return;
+  }
+  if (t.hasAttribute('data-delete-catalog')) {
+    const name = t.dataset.name;
+    const cat = buildCatalog(store.state).find((c) => c.name === normalizeName(name));
+    if (!cat || cat.usedIn.length === 0) return;
+    const ok = await confirmModal({
+      title: 'Eliminar ejercicio',
+      message: `Se va a quitar "${cat.displayName}" de ${cat.usedIn.length} rutina${cat.usedIn.length === 1 ? '' : 's'}. Las sesiones registradas se mantienen como historial.`,
+      confirmLabel: 'Eliminar',
+      cancelLabel: 'Cancelar',
+      destructive: true,
+    });
+    if (!ok) return;
+    // Build targets: one entry per matching routine.exercise across all
+    // routines, capturing the position + full exercise so undo restores
+    // everything exactly.
+    const targets = [];
+    store.state.doc.routines.forEach((r) => {
+      r.exercises.forEach((ex, index) => {
+        if (normalizeName(ex.name) === cat.name) {
+          targets.push({ routineId: r.id, index, exercise: structuredClone(ex) });
+        }
+      });
+    });
+    store.dispatch(makeCommand('CATALOG_DELETE', { name: cat.displayName, targets }));
+    go('#/dashboard');
     return;
   }
   if (t.hasAttribute('data-remove-exercise')) {
@@ -1358,10 +2137,88 @@ const onClick = async (e) => {
   }
 };
 
+// Live filter for the catalog picker — fires on every keystroke. Not a
+// store mutation, so no command dispatch.
+const onInput = (e) => {
+  const t = e.target;
+  if (t.id === 'catalog-filter') {
+    catalogFilter = t.value;
+    render(store.state);
+  }
+};
+
+// Bulk catalog-field edit: emits CATALOG_RENAME or CATALOG_UPDATE_FIELD,
+// applied to every routine.exercise matching the current catalog name.
+const dispatchCatalogFieldChange = (field, toValue) => {
+  if (!catalogEditName) return;
+  const cat = buildCatalog(store.state).find((c) => c.name === catalogEditName);
+  if (!cat || cat.usedIn.length === 0) return;
+  // Collect every matching exercise across routines, capturing the prior
+  // value per instance so revert is exact.
+  const targets = [];
+  store.state.doc.routines.forEach((r) => {
+    r.exercises.forEach((ex) => {
+      if (normalizeName(ex.name) === cat.name) {
+        targets.push({
+          routineId: r.id,
+          exerciseId: ex.id,
+          fromValue: field === 'weight'
+            ? (ex.weight ? { ...ex.weight } : null)
+            : ex[field],
+        });
+      }
+    });
+  });
+  if (targets.length === 0) return;
+  if (field === 'name') {
+    const trimmed = String(toValue).trim();
+    if (!trimmed || normalizeName(trimmed) === cat.name) return;
+    store.dispatch(makeCommand('CATALOG_RENAME', {
+      name: cat.displayName, toName: trimmed, targets,
+    }));
+    // The catalog identity changed — switch the drawer's target so the
+    // user can keep editing the same row.
+    catalogEditName = normalizeName(trimmed);
+    // Slug in the URL also moves so back navigation stays correct.
+    const route = parseRoute();
+    if (route.name === 'exercise' && route.editMode) {
+      const newSlug = slugify(trimmed);
+      history.replaceState(null, '', `#/dashboard/ex/${newSlug}/edit`);
+    }
+  } else {
+    // Skip no-op dispatches when every instance already matches.
+    const sameAll = targets.every((t) => JSON.stringify(t.fromValue ?? null) === JSON.stringify(toValue ?? null));
+    if (sameAll) return;
+    store.dispatch(makeCommand('CATALOG_UPDATE_FIELD', {
+      name: cat.displayName, field, toValue, targets,
+    }));
+  }
+};
+
 // Field updates dispatch on `change` (blur / Enter), not per-keystroke,
 // to avoid one command per character.
 const onChange = (e) => {
   const t = e.target;
+
+  if (t.matches('[data-cat-update]')) {
+    const field = t.name;
+    let value = t.value;
+    if (field === 'sets') value = Math.max(1, Math.min(20, Number(value) || 1));
+    if (field === 'video') value = String(value).trim() || null;
+    dispatchCatalogFieldChange(field, value);
+    return;
+  }
+  if (t.matches('[data-cat-weight-value], [data-cat-weight-unit]')) {
+    const drawer = t.closest('.drawer');
+    const valEl = drawer?.querySelector('[data-cat-weight-value]');
+    const unitEl = drawer?.querySelector('[data-cat-weight-unit]');
+    if (!valEl || !unitEl) return;
+    const raw = valEl.value.trim();
+    const next = raw === '' ? null : { value: Number(raw), unit: unitEl.value };
+    if (next && Number.isNaN(next.value)) return;
+    dispatchCatalogFieldChange('weight', next);
+    return;
+  }
 
   if (t.matches('[data-rename-routine]')) {
     const routineId = t.dataset.routine;
@@ -1464,6 +2321,11 @@ const start = async () => {
   window.addEventListener('hashchange', () => {
     menuOpen = false;
     newRoutineOpen = false;
+    catalogPickerOpen = false;
+    catalogPickerRoutineId = null;
+    catalogFilter = '';
+    catalogEditName = null;
+    detailRange = '30d';
     if (stopwatchTimer) { clearInterval(stopwatchTimer); stopwatchTimer = null; }
     releaseWakeLock();
     stopwatchOpen = false;
@@ -1471,6 +2333,7 @@ const start = async () => {
   });
   window.addEventListener('click', onClick);
   window.addEventListener('change', onChange);
+  window.addEventListener('input', onInput);
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('submit', onSubmit);
   render(store.state);
