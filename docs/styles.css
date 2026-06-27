@@ -1591,9 +1591,8 @@ button.danger-primary:active { background: #d33b3b; }
   letter-spacing: 0.05em;
 }
 
-/* ---------- Catalog picker (workout edit FAB) ---------- */
+/* ---------- Catalog screen (view / edit / pick) ---------- */
 
-.drawer-catalog .drawer-body { padding-bottom: 1.25rem; }
 .catalog-filter-wrap {
   position: relative;
   margin-bottom: 0.625rem;

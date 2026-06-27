@@ -216,17 +216,15 @@ const requestCacheVersion = async () => {
 requestCacheVersion();
 // Transient: "new routine" name-entry drawer (open from the edit list).
 let newRoutineOpen = false;
-// Transient: exercise-catalog manager drawer (open from the kebab menu) and
-// the "new catalog exercise" form drawer (open from inside the manager).
-let catalogManagerOpen = false;
+// Transient: the "create exercise" form drawer, opened from the catalog
+// screen's add control. When opened from pick mode, `catalogPickRoutineId`
+// remembers the routine to also add the new exercise to.
 let catalogFormOpen = false;
-// Transient: catalog picker drawer (open from the workout-edit FAB) plus
-// the current filter text. Reset on hashchange.
-let catalogPickerOpen = false;
-let catalogPickerRoutineId = null;
+let catalogPickRoutineId = null;
+// Catalog screen search filter text. Reset on hashchange.
 let catalogFilter = '';
-// Transient: catalog-edit drawer for renaming / re-defaulting a single
-// exercise across all routines. Holds normalized name of the target.
+// Transient: which catalog entry the edit drawer targets (normalized name),
+// kept in sync with the exercise-detail edit route.
 let catalogEditName = null;
 // Transient: range toggle on exercise detail view.
 let detailRange = '30d';
@@ -371,6 +369,35 @@ const normalizeName = (s) => String(s ?? '').trim().toLowerCase();
 const slugify = (name) => encodeURIComponent(normalizeName(name));
 const unslug = (slug) => { try { return decodeURIComponent(slug); } catch { return slug; } };
 
+// ---------- normalized exercise model ----------
+// The catalog is the source of truth. A routine exercise is a reference
+// `{ id, catalogId, series }`; `hydrateExercise` merges it with its catalog
+// entry into the self-contained `{ id, name, kind, unit, video, notes, series }`
+// shape the rest of the UI reads, so render code stays oblivious to the split.
+const findCatalogById = (state, id) => (state.doc.catalog || []).find((c) => c.id === id);
+
+const hydrateExercise = (state, inst) => {
+  if (!inst) return null;
+  const def = findCatalogById(state, inst.catalogId) || {};
+  return {
+    id: inst.id,
+    catalogId: inst.catalogId,
+    name: def.name ?? '',
+    kind: def.kind === 'time' ? 'time' : 'reps',
+    unit: def.unit === 'lb' ? 'lb' : 'kg',
+    video: def.video ?? null,
+    notes: def.notes ?? '',
+    series: Array.isArray(inst.series) ? inst.series : [],
+  };
+};
+
+// Display name of a routine reference (or any { catalogId } object), resolved
+// through the catalog; falls back to a legacy inline `name` for old log rows.
+const refName = (state, ref) => {
+  if (!ref) return 'un ejercicio';
+  return findCatalogById(state, ref.catalogId)?.name ?? ref.name ?? 'un ejercicio';
+};
+
 const sumDone = (arr) => arr.reduce((n, v) => n + (v ? 1 : 0), 0);
 
 // Map of dateKey → number of sets completed that day. Skips zero-effort days
@@ -387,86 +414,81 @@ const dayActivityMap = (state) => {
   return map;
 };
 
-// Walk routines (the canonical definition source) AND sessions (for history)
-// to build a deduped list of unique exercises keyed by normalized name.
-// Returns: [{ name, displayName, template, lastWeight, lastDate, sessionCount,
-//             usedIn: [{ routineId, routineIndex }] }] sorted by recent use.
+// Build the unified exercise list from the canonical `catalog` (source of
+// truth), enriched with usage (which routines reference each entry) and history
+// (sessions). Catalog entries are unique by normalized name. Sessions can also
+// surface a history-only row for an exercise since deleted from the catalog
+// (catalogId === null) — useful on the dashboard, filtered out of the catalog
+// screen. Returns rows:
+//   { name, displayName, catalogId, catalogIndex, template, kind, unit,
+//     lastWeight, lastDate, sessionCount,
+//     usedIn: [{ routineId, routineIndex, exerciseId, index }] }
 const buildCatalog = (state) => {
-  const groups = new Map();
+  const cat = state.doc.catalog || [];
+  const rows = new Map(); // normName -> row
 
-  const touch = (key, partial) => {
-    const cur = groups.get(key);
-    if (cur) {
-      if (partial.template && !cur.template) cur.template = partial.template;
-      if (partial.usedIn) {
-        for (const u of partial.usedIn) {
-          if (!cur.usedIn.some((x) => x.routineId === u.routineId)) cur.usedIn.push(u);
-        }
-      }
-      if (partial.lastDate && (!cur.lastDate || partial.lastDate > cur.lastDate)) {
-        cur.lastDate = partial.lastDate;
-        if (partial.lastWeight !== undefined) cur.lastWeight = partial.lastWeight;
-      }
-      if (partial.sessionCount) cur.sessionCount += partial.sessionCount;
-    } else {
-      groups.set(key, {
-        name: key,
-        displayName: partial.displayName ?? key,
-        template: partial.template ?? null,
-        lastWeight: partial.lastWeight ?? null,
-        lastDate: partial.lastDate ?? null,
-        sessionCount: partial.sessionCount ?? 0,
-        usedIn: partial.usedIn ? [...partial.usedIn] : [],
-      });
-    }
-  };
-
-  state.doc.routines.forEach((r, idx) => {
-    for (const ex of r.exercises) {
-      const key = normalizeName(ex.name);
-      if (!key) continue;
-      touch(key, {
-        displayName: ex.name,
-        template: ex,
-        usedIn: [{ routineId: r.id, routineIndex: idx }],
-        lastWeight: repWeight(ex),
-      });
-    }
+  cat.forEach((def, ci) => {
+    const key = normalizeName(def.name);
+    if (!key || rows.has(key)) return;
+    rows.set(key, {
+      name: key,
+      displayName: def.name,
+      catalogId: def.id,
+      catalogIndex: ci,
+      template: def,
+      kind: def.kind === 'time' ? 'time' : 'reps',
+      unit: def.unit === 'lb' ? 'lb' : 'kg',
+      lastWeight: null,
+      lastDate: null,
+      sessionCount: 0,
+      usedIn: [],
+    });
   });
 
-  // Standalone catalog definitions (created from the kebab menu). They carry
-  // name/kind/video/notes only — routine params are set when added to a
-  // routine. `touch` dedups by normalized name, so a definition that shares a
-  // name with a routine exercise won't create a duplicate row.
-  for (const ex of (state.doc.catalog ?? [])) {
-    const key = normalizeName(ex.name);
-    if (!key) continue;
-    touch(key, { displayName: ex.name, template: ex, usedIn: [] });
-  }
+  // Usage: which routines reference each entry, plus a planned-weight fallback.
+  state.doc.routines.forEach((r, idx) => {
+    r.exercises.forEach((inst, i) => {
+      const def = findCatalogById(state, inst.catalogId);
+      const key = def ? normalizeName(def.name) : null;
+      const row = key ? rows.get(key) : null;
+      if (!row) return;
+      row.usedIn.push({ routineId: r.id, routineIndex: idx, exerciseId: inst.id, index: i });
+      if (row.lastWeight == null) row.lastWeight = repWeight(hydrateExercise(state, inst));
+    });
+  });
 
+  // History: most-recent session wins for lastDate/lastWeight; count sessions.
   for (const [date, sess] of Object.entries(state.doc.sessions || {})) {
     for (const exId of Object.keys(sess)) {
       const arr = sessionFor(state, date, exId);
-      const done = sumDone(arr);
-      if (done === 0) continue;
+      if (sumDone(arr) === 0) continue;
       const snap = sessionSnapshot(state, date, exId);
-      let displayName = snap?.name;
-      if (!displayName) {
+      let dn = snap?.name;
+      if (!dn) {
         const found = findExerciseInState(state, exId);
-        displayName = found?.exercise.name;
+        dn = found ? hydrateExercise(state, found.exercise).name : null;
       }
-      if (!displayName) continue;
-      const key = normalizeName(displayName);
-      touch(key, {
-        displayName,
-        lastDate: date,
-        lastWeight: snapTopWeight(snap),
-        sessionCount: 1,
-      });
+      if (!dn) continue;
+      const key = normalizeName(dn);
+      let row = rows.get(key);
+      if (!row) {
+        // History-only: exercise no longer in the catalog.
+        row = {
+          name: key, displayName: dn, catalogId: null, catalogIndex: -1,
+          template: null, kind: snap?.kind ?? 'reps', unit: snap?.unit === 'lb' ? 'lb' : 'kg',
+          lastWeight: null, lastDate: null, sessionCount: 0, usedIn: [],
+        };
+        rows.set(key, row);
+      }
+      if (!row.lastDate || date > row.lastDate) {
+        row.lastDate = date;
+        row.lastWeight = snapTopWeight(snap) ?? row.lastWeight;
+      }
+      row.sessionCount += 1;
     }
   }
 
-  return [...groups.values()].sort((a, b) => {
+  return [...rows.values()].sort((a, b) => {
     if (a.lastDate && b.lastDate) return a.lastDate < b.lastDate ? 1 : -1;
     if (a.lastDate) return -1;
     if (b.lastDate) return 1;
@@ -490,7 +512,7 @@ const buildExerciseHistory = (state, normName) => {
       if (!displayName) {
         const found = findExerciseInState(state, exId);
         if (found) {
-          displayName = found.exercise.name;
+          displayName = hydrateExercise(state, found.exercise).name;
           routineId = found.routine.id;
           routineIndex = state.doc.routines.findIndex((r) => r.id === found.routine.id);
         }
@@ -630,9 +652,19 @@ const parseRoute = () => {
   if (parts[0] === 'edit') return { name: 'edit' };
   if (parts[0] === 'log') return { name: 'log' };
   if (parts[0] === 'motivation') return { name: 'motivation' };
+  if (parts[0] === 'catalog') {
+    if (parts[1] === 'edit') return { name: 'catalog', mode: 'edit' };
+    if (parts[1] === 'pick' && parts[2]) return { name: 'catalog', mode: 'pick', routineId: parts[2] };
+    if (parts[1] === 'ex' && parts[2]) {
+      const r = { name: 'exercise', slug: parts[2], origin: 'catalog' };
+      if (parts[3] === 'edit') r.editMode = true;
+      return r;
+    }
+    return { name: 'catalog', mode: 'view' };
+  }
   if (parts[0] === 'dashboard') {
     if (parts[1] === 'ex' && parts[2]) {
-      const r = { name: 'exercise', slug: parts[2] };
+      const r = { name: 'exercise', slug: parts[2], origin: 'dashboard' };
       if (parts[3] === 'edit') r.editMode = true;
       return r;
     }
@@ -835,12 +867,14 @@ const describeCommand = (cmd, state) => {
     }
     case 'CLEAR_SETS':
       return `Reiniciaste el checklist del día`;
-    case 'UPDATE_EXERCISE':
+    case 'UPDATE_SERIES':
+      return `Editaste las series de ${refName(state, findExerciseInState(state, p.exerciseId)?.exercise)}`;
+    case 'UPDATE_CATALOG_ENTRY':
       return `Editaste ${p.to?.name ?? 'un ejercicio'}`;
     case 'ADD_EXERCISE':
-      return `Agregaste ${p.exercise.name}`;
+      return `Agregaste ${refName(state, p.exercise)}`;
     case 'REMOVE_EXERCISE':
-      return `Eliminaste ${p.exercise.name}`;
+      return `Eliminaste ${refName(state, p.exercise)}`;
     case 'RENAME_ROUTINE':
       return `Renombraste la rutina a "${p.to}"`;
     case 'ADD_ROUTINE':
@@ -853,12 +887,8 @@ const describeCommand = (cmd, state) => {
       return `Reordenaste rutinas`;
     case 'MOVE_EXERCISE':
       return `Reordenaste ejercicios`;
-    case 'CATALOG_RENAME':
-      return `Renombraste "${p.targets[0]?.fromValue ?? ''}" a "${p.toName}" en ${p.targets.length} rutina${p.targets.length === 1 ? '' : 's'}`;
-    case 'CATALOG_UPDATE_FIELD':
-      return `Actualizaste ${p.field} de "${p.name}" en ${p.targets.length} rutina${p.targets.length === 1 ? '' : 's'}`;
     case 'CATALOG_DELETE':
-      return `Eliminaste "${p.name}" de ${p.targets.length} rutina${p.targets.length === 1 ? '' : 's'}`;
+      return `Eliminaste "${p.name}"${p.targets.length ? ` de ${p.targets.length} rutina${p.targets.length === 1 ? '' : 's'}` : ' del catálogo'}`;
     default:
       return cmd.type;
   }
@@ -938,7 +968,7 @@ const renderMenuSheet = () => `
     </div>
     <ul class="menu-list">
       <li>
-        <button class="menu-item" data-open-catalog-manager>
+        <button class="menu-item" data-go="#/catalog">
           <span class="menu-icon" aria-hidden="true">
             <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
           </span>
@@ -1071,7 +1101,8 @@ const renderWorkout = (state, routineId, editExerciseId, editMode = false) => {
              <p>Esta rutina está vacía.</p>
              <button class="primary" data-add-exercise data-routine="${esc(routine.id)}" data-open-drawer="1">Agregar primer ejercicio</button>
            </div>`)
-    : routine.exercises.map((ex, exIndex) => {
+    : routine.exercises.map((inst, exIndex) => {
+        const ex = hydrateExercise(state, inst);
         const arr = sessionFor(state, date, ex.id);
         const kind = exKind(ex);
         const series = exSeries(ex);
@@ -1187,7 +1218,7 @@ const renderWorkout = (state, routineId, editExerciseId, editMode = false) => {
   const { total, done } = countDoneFor(state, date, routine);
 
   const drawer = editExerciseId
-    ? renderDrawer(routine, routine.exercises.find((e) => e.id === editExerciseId))
+    ? renderDrawer(routine, hydrateExercise(state, routine.exercises.find((e) => e.id === editExerciseId)))
     : '';
 
   const idx = state.doc.routines.findIndex((x) => x.id === routine.id);
@@ -1540,12 +1571,14 @@ const renderBarChart = (rows, kind) => {
     </svg>`;
 };
 
-const renderExerciseDetail = (state, slug, editMode) => {
+const renderExerciseDetail = (state, slug, editMode, origin = 'dashboard') => {
+  const home = origin === 'catalog' ? '#/catalog' : '#/dashboard';
+  const homeLabel = origin === 'catalog' ? 'Volver al catálogo' : 'Volver al progreso';
   const normName = normalizeName(unslug(slug));
   const all = buildExerciseHistory(state, normName);
   if (all.length === 0 && !buildCatalog(state).some((c) => c.name === normName)) {
-    // Unknown slug — bounce to dashboard rather than render an empty page.
-    return renderDashboard(state);
+    // Unknown slug — bounce to the origin list rather than render an empty page.
+    return origin === 'catalog' ? renderCatalog(state, 'view') : renderDashboard(state);
   }
   const catalogEntry = buildCatalog(state).find((c) => c.name === normName);
   const displayName = catalogEntry?.displayName ?? unslug(slug);
@@ -1582,12 +1615,12 @@ const renderExerciseDetail = (state, slug, editMode) => {
 
   return `
     <header class="workout-bar">
-      ${backBtn('#/dashboard', 'Volver al progreso')}
+      ${backBtn(home, homeLabel)}
       <div class="title-block">
         <div class="title">${esc(displayName)}</div>
         <div class="sub">${sessions.length} ${sessions.length === 1 ? 'sesión' : 'sesiones'}${catalogEntry?.usedIn?.length ? ` · ${catalogEntry.usedIn.length} ${catalogEntry.usedIn.length === 1 ? 'rutina' : 'rutinas'}` : ''}</div>
       </div>
-      <button class="tool-btn" data-go="#/dashboard/ex/${esc(slug)}/edit" aria-label="Editar ejercicio">${iconEdit}</button>
+      ${catalogEntry ? `<button class="tool-btn" data-go="#/${origin}/ex/${esc(slug)}/edit" aria-label="Editar ejercicio">${iconEdit}</button>` : '<span></span>'}
     </header>
 
     <div class="section">
@@ -1612,135 +1645,104 @@ const renderExerciseDetail = (state, slug, editMode) => {
   `;
 };
 
-// ---------- Catalog picker (workout edit FAB) ----------
-
-const renderCatalogSheet = (state) => {
-  const routineId = catalogPickerRoutineId;
-  const routine = state.doc.routines.find((r) => r.id === routineId);
-  if (!routine) return '';
-
-  const filter = normalizeName(catalogFilter);
-  const items = buildCatalog(state)
-    .filter((c) => !filter || c.name.includes(filter))
-    .map((c) => {
-      const usedLabels = c.usedIn
-        .map((u) => `Día ${dayNum(u.routineIndex)}`)
-        .join(' + ');
-      const w = fmtWeight(c.lastWeight);
-      const meta = [w, usedLabels].filter(Boolean).join(' · ');
-      return `
-        <li>
-          <button class="catalog-row" data-pick-catalog data-name="${esc(c.displayName)}">
-            <span class="catalog-badge">
-              <span class="catalog-badge-value">${esc(c.lastWeight?.value ?? '·')}</span>
-              <span class="catalog-badge-unit">${esc(c.lastWeight?.unit ?? '')}</span>
-            </span>
-            <span class="catalog-text">
-              <span class="catalog-name">${esc(c.displayName)}</span>
-              <span class="catalog-meta">${esc(meta || 'sin uso aún')}</span>
-            </span>
-            <span class="catalog-chev" aria-hidden="true">›</span>
-          </button>
-        </li>`;
-    }).join('');
-
-  return `
-    <div class="drawer-backdrop" data-close-catalog></div>
-    <aside class="drawer drawer-catalog" role="dialog" aria-modal="true" aria-label="Agregar ejercicio">
-      <div class="drawer-handle" aria-hidden="true"></div>
-      <div class="drawer-header">
-        <h3>Agregar ejercicio</h3>
-        <button class="icon-btn" data-close-catalog aria-label="Cerrar">✕</button>
-      </div>
-      <div class="drawer-body">
-        <div class="catalog-filter-wrap">
-          <input type="text" id="catalog-filter" class="catalog-filter"
-                 placeholder="Buscar ejercicio…" autocomplete="off"
-                 value="${esc(catalogFilter)}" />
-        </div>
-        <button class="catalog-new" data-add-exercise-blank data-routine="${esc(routine.id)}">
-          <span class="catalog-new-icon" aria-hidden="true">＋</span>
-          <span class="catalog-new-text">
-            <span class="catalog-new-title">Crear ejercicio nuevo</span>
-            <span class="catalog-new-sub">Empezar desde cero</span>
-          </span>
-        </button>
-        <div class="section catalog-section">
-          <span class="label">Del catálogo</span>
-          <span class="count">${String(buildCatalog(state).length).padStart(2, '0')}</span>
-        </div>
-        ${items
-          ? `<ul class="catalog-list">${items}</ul>`
-          : `<p class="muted small" style="padding:0.5rem 0.25rem">No hay ejercicios que coincidan.</p>`}
-      </div>
-    </aside>
-  `;
+// ---------- Catalog screen ----------
+// The exercise catalog, on its own screen. `mode`:
+//   'view' — navigate the list (a row opens the exercise detail)
+//   'edit' — add / edit / delete exercises (entered via the "Editar" button)
+//   'pick' — choose an exercise to insert into `routineId`, then return to the
+//            workout editor (reached from the workout-edit FAB)
+const catalogRowMeta = (c) => {
+  const usedLabels = c.usedIn.map((u) => `Día ${dayNum(u.routineIndex)}`).join(' + ');
+  return c.lastDate
+    ? `${c.sessionCount} ${c.sessionCount === 1 ? 'sesión' : 'sesiones'}${usedLabels ? ` · ${usedLabels}` : ''}`
+    : (usedLabels || 'sin uso aún');
 };
 
-// Exercise-catalog manager — opened from the kebab menu. Browse every
-// exercise, create new ones, tap to open an exercise (edit/stats), and delete
-// the ones that aren't used in any routine.
-const renderCatalogManagerSheet = (state) => {
+const renderCatalog = (state, mode = 'view', routineId = null) => {
+  const isPick = mode === 'pick';
+  const isEdit = mode === 'edit';
+  const routine = isPick ? state.doc.routines.find((r) => r.id === routineId) : null;
+  if (isPick && !routine) return renderHome(state);
+
   const filter = normalizeName(catalogFilter);
-  const all = buildCatalog(state);
-  const items = all
-    .filter((c) => !filter || c.name.includes(filter))
-    .map((c) => {
-      const usedLabels = c.usedIn.map((u) => `Día ${dayNum(u.routineIndex)}`).join(' + ');
-      const meta = c.lastDate
-        ? `${c.sessionCount} ${c.sessionCount === 1 ? 'sesión' : 'sesiones'}${usedLabels ? ` · ${usedLabels}` : ''}`
-        : (usedLabels || 'sin uso aún');
-      // Only exercises not used in any routine can be deleted from the catalog.
-      const deletable = c.usedIn.length === 0;
+  // Only real catalog entries are listed; history-only rows (deleted exercises)
+  // have no catalogId and aren't referenceable.
+  const all = buildCatalog(state).filter((c) => c.catalogId);
+  const list = all.filter((c) => !filter || c.name.includes(filter));
+
+  const items = list.map((c) => {
+    const badge = `
+      <span class="catalog-badge">
+        <span class="catalog-badge-value">${esc(c.lastWeight?.value ?? '·')}</span>
+        <span class="catalog-badge-unit">${esc(c.lastWeight?.unit ?? '')}</span>
+      </span>`;
+    const text = `
+      <span class="catalog-text">
+        <span class="catalog-name">${esc(c.displayName)}</span>
+        <span class="catalog-meta">${esc(catalogRowMeta(c))}</span>
+      </span>`;
+    const slug = slugify(c.displayName);
+    if (isPick) {
+      return `<li><button class="catalog-row" data-pick-catalog data-name="${esc(c.displayName)}">${badge}${text}<span class="catalog-chev" aria-hidden="true">›</span></button></li>`;
+    }
+    if (isEdit) {
       return `
         <li class="catalog-manage-row">
-          <button class="catalog-row" data-go="#/dashboard/ex/${esc(slugify(c.displayName))}">
-            <span class="catalog-badge">
-              <span class="catalog-badge-value">${esc(c.lastWeight?.value ?? '·')}</span>
-              <span class="catalog-badge-unit">${esc(c.lastWeight?.unit ?? '')}</span>
-            </span>
-            <span class="catalog-text">
-              <span class="catalog-name">${esc(c.displayName)}</span>
-              <span class="catalog-meta">${esc(meta)}</span>
-            </span>
-            <span class="catalog-chev" aria-hidden="true">›</span>
-          </button>
-          ${deletable
-            ? `<button class="catalog-del-btn" data-delete-catalog data-name="${esc(c.displayName)}" aria-label="Eliminar ${esc(c.displayName)}">${iconTrash}</button>`
-            : ''}
+          <button class="catalog-row" data-go="#/catalog/ex/${esc(slug)}/edit">${badge}${text}<span class="catalog-chev" aria-hidden="true">✎</span></button>
+          <button class="catalog-del-btn" data-delete-catalog data-name="${esc(c.displayName)}" aria-label="Eliminar ${esc(c.displayName)}">${iconTrash}</button>
         </li>`;
-    }).join('');
+    }
+    return `<li><button class="catalog-row" data-go="#/catalog/ex/${esc(slug)}">${badge}${text}<span class="catalog-chev" aria-hidden="true">›</span></button></li>`;
+  }).join('');
+
+  const title = isPick ? 'Agregar ejercicio' : 'Catálogo';
+  const backHref = isPick ? `#/workout/${esc(routine.id)}/edit` : '#/';
+  // Create-new affordance: in pick mode a labelled button that also adds the
+  // new exercise to the routine; in edit mode a FAB at the bottom.
+  const newBtn = isPick
+    ? `<button class="catalog-new" data-add-catalog-exercise data-routine="${esc(routine.id)}">
+         <span class="catalog-new-icon" aria-hidden="true">＋</span>
+         <span class="catalog-new-text">
+           <span class="catalog-new-title">Crear ejercicio nuevo</span>
+           <span class="catalog-new-sub">Agregar al catálogo y a la rutina</span>
+         </span>
+       </button>`
+    : '';
+  const fab = isEdit ? `
+    <div class="fab-row">
+      <button class="fab" data-add-catalog-exercise aria-label="Crear ejercicio">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      </button>
+    </div>` : '';
+  const primary = isPick ? ''
+    : (isEdit
+        ? '<button class="icon-btn primary" data-go="#/catalog">Listo</button>'
+        : '<button class="icon-btn primary" data-go="#/catalog/edit">Editar</button>');
 
   return `
-    <div class="drawer-backdrop" data-close-catalog-manager></div>
-    <aside class="drawer drawer-catalog" role="dialog" aria-modal="true" aria-label="Catálogo de ejercicios">
-      <div class="drawer-handle" aria-hidden="true"></div>
-      <div class="drawer-header">
-        <h3>Catálogo de ejercicios</h3>
-        <button class="icon-btn" data-close-catalog-manager aria-label="Cerrar">✕</button>
+    <header class="workout-bar">
+      ${backBtn(backHref, isPick ? 'Volver a la rutina' : 'Volver al inicio')}
+      <div class="title-block">
+        <div class="title">${esc(title)}</div>
+        <div class="sub">${list.length} ${list.length === 1 ? 'ejercicio' : 'ejercicios'}</div>
       </div>
-      <div class="drawer-body">
-        <div class="catalog-filter-wrap">
-          <input type="text" id="catalog-filter" class="catalog-filter"
-                 placeholder="Buscar ejercicio…" autocomplete="off"
-                 value="${esc(catalogFilter)}" />
-        </div>
-        <button class="catalog-new" data-add-catalog-exercise>
-          <span class="catalog-new-icon" aria-hidden="true">＋</span>
-          <span class="catalog-new-text">
-            <span class="catalog-new-title">Crear ejercicio nuevo</span>
-            <span class="catalog-new-sub">Agregar al catálogo</span>
-          </span>
-        </button>
-        <div class="section catalog-section">
-          <span class="label">Todos los ejercicios</span>
-          <span class="count">${String(all.length).padStart(2, '0')}</span>
-        </div>
-        ${items
-          ? `<ul class="catalog-list">${items}</ul>`
-          : `<p class="muted small" style="padding:0.5rem 0.25rem">No hay ejercicios que coincidan.</p>`}
-      </div>
-    </aside>
+      <span></span>
+    </header>
+    <div class="catalog-filter-wrap">
+      <input type="text" id="catalog-filter" class="catalog-filter"
+             placeholder="Buscar ejercicio…" autocomplete="off"
+             value="${esc(catalogFilter)}" />
+    </div>
+    ${newBtn}
+    <div class="section catalog-section">
+      <span class="label">${isPick ? 'Del catálogo' : 'Todos los ejercicios'}</span>
+      <span class="count">${String(all.length).padStart(2, '0')}</span>
+    </div>
+    ${items
+      ? `<ul class="catalog-list">${items}</ul>`
+      : `<p class="muted small" style="padding:0.5rem 0.25rem">No hay ejercicios que coincidan.</p>`}
+    ${fab}
+    ${bottomBar(state, primary)}
   `;
 };
 
@@ -1775,13 +1777,13 @@ const renderCatalogEditDrawer = (state, catalogEntry) => {
         <div class="bottom-action">
           <button class="primary" data-close-catalog-edit>Listo</button>
         </div>
-        ${usedCount === 0 ? `
         <div class="bottom-action">
           <button class="danger" data-delete-catalog data-name="${esc(catalogEntry.displayName)}">
-            Eliminar ejercicio del catálogo
+            Eliminar ejercicio
           </button>
-        </div>` : `
-        <p class="muted small" style="padding:0.5rem 0.25rem">Para eliminarlo, primero quitalo de las rutinas que lo usan.</p>`}
+        </div>
+        ${usedCount > 0 ? `
+        <p class="muted small" style="padding:0.5rem 0.25rem">Se quitará de la${usedCount === 1 ? '' : 's'} ${usedCount} rutina${usedCount === 1 ? '' : 's'} que lo usa${usedCount === 1 ? '' : 'n'}. Las sesiones registradas se mantienen.</p>` : ''}
       </div>
     </aside>
   `;
@@ -1848,18 +1850,17 @@ const render = (state) => {
   else if (route.name === 'log') html = renderLog(state);
   else if (route.name === 'motivation') html = renderMotivation(state);
   else if (route.name === 'dashboard') html = renderDashboard(state);
-  else if (route.name === 'exercise') html = renderExerciseDetail(state, route.slug, !!route.editMode);
+  else if (route.name === 'catalog') html = renderCatalog(state, route.mode, route.routineId);
+  else if (route.name === 'exercise') html = renderExerciseDetail(state, route.slug, !!route.editMode, route.origin);
   else html = renderHome(state);
 
   if (menuOpen) html += renderMenuSheet();
   if (newRoutineOpen) html += renderNewRoutineSheet();
-  if (catalogManagerOpen) html += renderCatalogManagerSheet(state);
   if (catalogFormOpen) html += renderCatalogFormSheet();
   if (stopwatchOpen) html += renderStopwatchSheet();
-  if (catalogPickerOpen) html += renderCatalogSheet(state);
 
   const exerciseEditDrawerOpen = route.name === 'exercise' && !!route.editMode;
-  const drawerOpen = (route.name === 'workout' && !!route.editExerciseId) || menuOpen || newRoutineOpen || catalogManagerOpen || catalogFormOpen || stopwatchOpen || catalogPickerOpen || exerciseEditDrawerOpen;
+  const drawerOpen = (route.name === 'workout' && !!route.editExerciseId) || menuOpen || newRoutineOpen || catalogFormOpen || stopwatchOpen || exerciseEditDrawerOpen;
   const suppressDrawerAnim = drawerOpen && lastDrawerOpen;
 
   const routeKey = JSON.stringify(route);
@@ -1903,9 +1904,9 @@ const render = (state) => {
       requestAnimationFrame(() => input.focus());
     }
   }
-  // Same idea for the catalog picker's and manager's search box. Skip on
-  // mobile (where showing the keyboard immediately is jarring) — caret only.
-  if (catalogPickerOpen || catalogManagerOpen) {
+  // Keep the caret in the catalog screen's search box across filter
+  // re-renders. Caret only (no auto-keyboard) so it isn't jarring on mobile.
+  if (route.name === 'catalog') {
     const input = document.getElementById('catalog-filter');
     if (input && document.activeElement !== input && catalogFilter) {
       requestAnimationFrame(() => {
@@ -1949,27 +1950,18 @@ const render = (state) => {
       } else if (bd.hasAttribute('data-cancel-new-routine')) {
         newRoutineOpen = false;
         render(store.state);
-      } else if (bd.hasAttribute('data-close-catalog-manager')) {
-        catalogManagerOpen = false;
-        catalogFilter = '';
-        render(store.state);
       } else if (bd.hasAttribute('data-cancel-catalog-form')) {
-        // Tapping outside the create form returns to the catalog manager.
+        // Tapping outside the create form closes it, back to the catalog screen.
         catalogFormOpen = false;
-        catalogManagerOpen = true;
+        catalogPickRoutineId = null;
         render(store.state);
       } else if (bd.hasAttribute('data-close-stopwatch')) {
         closeStopwatch();
-      } else if (bd.hasAttribute('data-close-catalog')) {
-        catalogPickerOpen = false;
-        catalogPickerRoutineId = null;
-        catalogFilter = '';
-        render(store.state);
       } else if (bd.hasAttribute('data-close-catalog-edit')) {
         const route = parseRoute();
         if (route.name === 'exercise' && route.editMode) {
           if (history.length > 1) history.back();
-          else go(`#/dashboard/ex/${route.slug}`);
+          else go(`#/${route.origin || 'dashboard'}/ex/${route.slug}`);
         }
       } else if (bd.hasAttribute('data-close-drawer')) {
         const route = parseRoute();
@@ -2078,7 +2070,7 @@ const importConfig = async () => {
 // ---------- event delegation ----------
 
 const onClick = async (e) => {
-  const t = e.target.closest('[data-go],[data-done],[data-undo],[data-redo],[data-toggle-set],[data-toggle-media],[data-clear-sets],[data-add-routine],[data-add-exercise],[data-add-exercise-blank],[data-remove-exercise],[data-remove-routine],[data-reset],[data-edit-exercise],[data-close-drawer],[data-menu],[data-close-menu],[data-export],[data-import],[data-cancel-new-routine],[data-open-catalog-manager],[data-close-catalog-manager],[data-add-catalog-exercise],[data-cancel-catalog-form],[data-stopwatch],[data-close-stopwatch],[data-close-catalog],[data-pick-catalog],[data-close-catalog-edit],[data-detail-range],[data-delete-catalog]');
+  const t = e.target.closest('[data-go],[data-done],[data-undo],[data-redo],[data-toggle-set],[data-toggle-media],[data-clear-sets],[data-add-routine],[data-add-exercise],[data-remove-exercise],[data-remove-routine],[data-reset],[data-edit-exercise],[data-close-drawer],[data-menu],[data-close-menu],[data-export],[data-import],[data-cancel-new-routine],[data-add-catalog-exercise],[data-cancel-catalog-form],[data-stopwatch],[data-close-stopwatch],[data-pick-catalog],[data-close-catalog-edit],[data-detail-range],[data-delete-catalog]');
   if (!t) return;
 
   if (t.hasAttribute('data-go')) {
@@ -2119,30 +2111,17 @@ const onClick = async (e) => {
     render(store.state);
     return;
   }
-  if (t.hasAttribute('data-open-catalog-manager')) {
-    menuOpen = false;
-    catalogManagerOpen = true;
-    catalogFilter = '';
-    render(store.state);
-    return;
-  }
-  if (t.hasAttribute('data-close-catalog-manager')) {
-    catalogManagerOpen = false;
-    catalogFilter = '';
-    render(store.state);
-    return;
-  }
   if (t.hasAttribute('data-add-catalog-exercise')) {
-    // Opened from inside the catalog manager — swap to the create form.
-    catalogManagerOpen = false;
+    // Open the create form over the catalog screen. A `data-routine` (from
+    // pick mode) makes the new exercise also get added to that routine.
     catalogFormOpen = true;
+    catalogPickRoutineId = t.dataset.routine || null;
     render(store.state);
     return;
   }
   if (t.hasAttribute('data-cancel-catalog-form')) {
-    // Closing the create form returns to the catalog manager.
     catalogFormOpen = false;
-    catalogManagerOpen = true;
+    catalogPickRoutineId = null;
     render(store.state);
     return;
   }
@@ -2195,14 +2174,15 @@ const onClick = async (e) => {
     // Snapshot only refreshes on completion (false → true). Toggling off
     // preserves the existing snapshot so undo behaves predictably.
     const found = findExerciseInState(store.state, exerciseId);
+    const hx = found ? hydrateExercise(store.state, found.exercise) : null;
     const fromSnapshot = sessionSnapshot(store.state, date, exerciseId);
-    const snapshot = to && found
+    const snapshot = to && hx
       ? {
-          name: found.exercise.name,
-          kind: exKind(found.exercise),
-          unit: exUnit(found.exercise),
+          name: hx.name,
+          kind: exKind(hx),
+          unit: exUnit(hx),
           // Full per-set breakdown — history derives weight list + volume.
-          series: structuredClone(exSeries(found.exercise)),
+          series: structuredClone(exSeries(hx)),
           routineId: found.routine.id,
         }
       : undefined;
@@ -2240,84 +2220,41 @@ const onClick = async (e) => {
     return;
   }
   if (t.hasAttribute('data-add-exercise')) {
-    // Open the catalog picker so the user can either pick from existing
-    // exercises (faster) or create a blank one.
+    // Go to the catalog in pick mode for this routine.
     const routineId = t.dataset.routine;
     const r = store.state.doc.routines.find((x) => x.id === routineId);
     if (!r) return;
-    catalogPickerOpen = true;
-    catalogPickerRoutineId = routineId;
     catalogFilter = '';
-    render(store.state);
-    return;
-  }
-  if (t.hasAttribute('data-add-exercise-blank')) {
-    const routineId = t.dataset.routine;
-    const r = store.state.doc.routines.find((x) => x.id === routineId);
-    if (!r) return;
-    const exercise = {
-      id: uid(), name: 'Nuevo ejercicio',
-      kind: 'reps', unit: 'kg', series: makeSeries(3, 'reps'),
-      video: null, notes: '',
-    };
-    store.dispatch(makeCommand('ADD_EXERCISE', {
-      routineId, index: r.exercises.length, exercise,
-    }));
-    catalogPickerOpen = false;
-    catalogPickerRoutineId = null;
-    go(`#/workout/${routineId}/edit/${exercise.id}`);
+    go(`#/catalog/pick/${routineId}`);
     return;
   }
   if (t.hasAttribute('data-pick-catalog')) {
-    const routineId = catalogPickerRoutineId;
+    // Insert a reference to the chosen catalog entry into the pick routine,
+    // then open the new instance's editor to set its series.
+    const route = parseRoute();
+    const routineId = route.name === 'catalog' ? route.routineId : null;
     const r = store.state.doc.routines.find((x) => x.id === routineId);
     if (!r) return;
-    const name = t.dataset.name;
-    const cat = buildCatalog(store.state).find((c) => c.name === normalizeName(name));
-    const template = cat?.template;
-    const tKind = template ? exKind(template) : 'reps';
-    // A routine-instance template carries `series` (copy it verbatim); a bare
-    // catalog definition has none, so start from defaults — pre-filling each
-    // set's weight from the latest known value for convenience.
-    const prefillW = cat?.lastWeight ? cat.lastWeight.value : null;
-    const defSeries = makeSeries(3, tKind).map((s) =>
-      tKind === 'time' ? s : { ...s, weight: prefillW });
-    const exercise = template ? {
-      id: uid(),
-      name: cat.displayName,
-      kind: tKind,
-      unit: template.unit === 'lb' ? 'lb' : (cat.lastWeight?.unit ?? 'kg'),
-      series: (Array.isArray(template.series) && template.series.length)
-        ? structuredClone(template.series)
-        : defSeries,
-      video: template.video ?? null,
-      notes: template.notes ?? '',
-    } : {
-      id: uid(), name: name || 'Nuevo ejercicio',
-      kind: 'reps', unit: 'kg', series: makeSeries(3, 'reps'),
-      video: null, notes: '',
-    };
+    const cat = buildCatalog(store.state).find((c) => c.name === normalizeName(t.dataset.name));
+    if (!cat || !cat.catalogId) return;
+    // Default series from the entry's kind, pre-filling weight from the latest
+    // known value for convenience.
+    const prefillW = cat.lastWeight ? cat.lastWeight.value : null;
+    const series = makeSeries(3, cat.kind).map((s) =>
+      cat.kind === 'time' ? s : { ...s, weight: prefillW });
+    const exercise = { id: uid(), catalogId: cat.catalogId, series };
     store.dispatch(makeCommand('ADD_EXERCISE', {
       routineId, index: r.exercises.length, exercise,
     }));
-    catalogPickerOpen = false;
-    catalogPickerRoutineId = null;
     catalogFilter = '';
     go(`#/workout/${routineId}/edit/${exercise.id}`);
-    return;
-  }
-  if (t.hasAttribute('data-close-catalog')) {
-    catalogPickerOpen = false;
-    catalogPickerRoutineId = null;
-    catalogFilter = '';
-    render(store.state);
     return;
   }
   if (t.hasAttribute('data-close-catalog-edit')) {
     const route = parseRoute();
     if (route.name === 'exercise' && route.editMode) {
       if (history.length > 1) history.back();
-      else go(`#/dashboard/ex/${route.slug}`);
+      else go(`#/${route.origin || 'dashboard'}/ex/${route.slug}`);
     }
     return;
   }
@@ -2330,30 +2267,42 @@ const onClick = async (e) => {
     return;
   }
   if (t.hasAttribute('data-delete-catalog')) {
-    const name = t.dataset.name;
-    const cat = buildCatalog(store.state).find((c) => c.name === normalizeName(name));
-    const catIdx = (store.state.doc.catalog ?? []).findIndex((c) => normalizeName(c.name) === cat?.name);
-    // Only exercises not used in any routine can be deleted, and only if they
-    // have a catalog definition to remove.
-    if (!cat || cat.usedIn.length > 0 || catIdx < 0) return;
+    const cat = buildCatalog(store.state).find((c) => c.name === normalizeName(t.dataset.name));
+    if (!cat || !cat.catalogId) return;
+    const catIdx = (store.state.doc.catalog ?? []).findIndex((c) => c.id === cat.catalogId);
+    if (catIdx < 0) return;
+    // Cascade: capture every routine reference (index + full instance) so the
+    // delete removes them all and undo restores them exactly.
+    const targets = [];
+    store.state.doc.routines.forEach((r) => {
+      r.exercises.forEach((inst, index) => {
+        if (inst.catalogId === cat.catalogId) {
+          targets.push({ routineId: r.id, index, exercise: structuredClone(inst) });
+        }
+      });
+    });
+    const days = [...new Set(cat.usedIn.map((u) => `Día ${dayNum(u.routineIndex)}`))].join(', ');
     const ok = await confirmModal({
       title: 'Eliminar ejercicio',
-      message: `Se va a quitar "${cat.displayName}" del catálogo. Las sesiones registradas se mantienen como historial.`,
+      message: targets.length
+        ? `Se va a quitar "${cat.displayName}" del catálogo y de ${days}. Las sesiones registradas se mantienen como historial.`
+        : `Se va a quitar "${cat.displayName}" del catálogo. Las sesiones registradas se mantienen como historial.`,
       confirmLabel: 'Eliminar',
       cancelLabel: 'Cancelar',
       destructive: true,
     });
     if (!ok) return;
     const catalogTarget = {
-      id: store.state.doc.catalog[catIdx].id,
+      id: cat.catalogId,
       index: catIdx,
       exercise: structuredClone(store.state.doc.catalog[catIdx]),
     };
-    store.dispatch(makeCommand('CATALOG_DELETE', { name: cat.displayName, targets: [], catalogTarget }));
-    // Stay in the catalog manager if that's where the delete came from;
-    // otherwise (from the exercise edit drawer) return to the dashboard.
-    if (catalogManagerOpen) render(store.state);
-    else go('#/dashboard');
+    store.dispatch(makeCommand('CATALOG_DELETE', { name: cat.displayName, targets, catalogTarget }));
+    // From the exercise-detail edit drawer, return to the catalog list;
+    // from the catalog screen itself, stay put.
+    const route = parseRoute();
+    if (route.name === 'exercise') go('#/catalog');
+    else render(store.state);
     return;
   }
   if (t.hasAttribute('data-remove-exercise')) {
@@ -2417,61 +2366,63 @@ const onInput = (e) => {
   }
 };
 
-// Bulk catalog-field edit: emits CATALOG_RENAME or CATALOG_UPDATE_FIELD,
-// applied to every routine.exercise matching the current catalog name. These
-// are definition-level fields (name, video, notes) — they also sync to the
-// standalone catalog entry. Per-instance routine params (series) are edited in
-// the workout editor, not here.
-const CATALOG_DEF_FIELDS = new Set(['video', 'notes']);
-
-const dispatchCatalogFieldChange = (field, toValue) => {
-  if (!catalogEditName) return;
-  const cat = buildCatalog(store.state).find((c) => c.name === catalogEditName);
-  if (!cat) return;
-  // A standalone definition (created from the kebab menu) may have no routine
-  // instances — we still want to edit it.
-  const catEntry = (store.state.doc.catalog ?? []).find((c) => normalizeName(c.name) === cat.name);
-  if (cat.usedIn.length === 0 && !catEntry) return;
-  // Collect every matching exercise across routines, capturing the prior
-  // value per instance so revert is exact.
-  const targets = [];
-  store.state.doc.routines.forEach((r) => {
-    r.exercises.forEach((ex) => {
-      if (normalizeName(ex.name) === cat.name) {
-        targets.push({ routineId: r.id, exerciseId: ex.id, fromValue: ex[field] });
-      }
-    });
-  });
+// Edit one catalog entry's definition field via UPDATE_CATALOG_ENTRY. Because
+// routines reference the entry, the change propagates everywhere. A `kind`
+// change reshapes the series of every referencing instance so undo is exact.
+// Returns true if a command was dispatched.
+const dispatchEntryFieldChange = (catalogId, field, value) => {
+  const cat = store.state.doc.catalog || [];
+  const idx = cat.findIndex((c) => c.id === catalogId);
+  if (idx < 0) return false;
+  const from = structuredClone(cat[idx]);
+  const to = structuredClone(cat[idx]);
   if (field === 'name') {
-    const trimmed = String(toValue).trim();
-    if (!trimmed || normalizeName(trimmed) === cat.name) return;
-    const catalogTarget = catEntry ? { id: catEntry.id, fromValue: catEntry.name } : undefined;
-    store.dispatch(makeCommand('CATALOG_RENAME', {
-      name: cat.displayName, toName: trimmed, targets, ...(catalogTarget ? { catalogTarget } : {}),
-    }));
-    // The catalog identity changed — switch the drawer's target so the
-    // user can keep editing the same row.
-    catalogEditName = normalizeName(trimmed);
-    // Slug in the URL also moves so back navigation stays correct.
-    const route = parseRoute();
-    if (route.name === 'exercise' && route.editMode) {
-      const newSlug = slugify(trimmed);
-      history.replaceState(null, '', `#/dashboard/ex/${newSlug}/edit`);
-    }
+    const trimmed = String(value).trim();
+    if (!trimmed) return false;
+    to.name = trimmed;
+  } else if (field === 'kind') {
+    to.kind = value === 'time' ? 'time' : 'reps';
+  } else if (field === 'video') {
+    to.video = String(value).trim() || null;
+  } else if (field === 'notes') {
+    to.notes = value;
+  } else if (field === 'unit') {
+    to.unit = value === 'lb' ? 'lb' : 'kg';
   } else {
-    const catalogTarget = (catEntry && CATALOG_DEF_FIELDS.has(field))
-      ? { id: catEntry.id, fromValue: catEntry[field] ?? (field === 'video' ? null : '') }
-      : undefined;
-    if (targets.length === 0 && !catalogTarget) return;
-    // Skip no-op dispatches when every instance (and the definition) already
-    // matches the new value.
-    const sameRoutine = targets.every((t) => JSON.stringify(t.fromValue ?? null) === JSON.stringify(toValue ?? null));
-    const sameCat = !catalogTarget || JSON.stringify(catalogTarget.fromValue ?? null) === JSON.stringify(toValue ?? null);
-    if (sameRoutine && sameCat) return;
-    store.dispatch(makeCommand('CATALOG_UPDATE_FIELD', {
-      name: cat.displayName, field, toValue, targets, ...(catalogTarget ? { catalogTarget } : {}),
+    return false;
+  }
+  // When the kind changes, reshape the series of every referencing instance.
+  let reshape;
+  if (field === 'kind' && to.kind !== from.kind) {
+    reshape = [];
+    store.state.doc.routines.forEach((r) => r.exercises.forEach((inst) => {
+      if (inst.catalogId !== catalogId) return;
+      const fromS = structuredClone(Array.isArray(inst.series) ? inst.series : []);
+      reshape.push({ routineId: r.id, exerciseId: inst.id, from: fromS, to: reshapeSeries(fromS, to.kind) });
     }));
   }
+  if (!reshape && JSON.stringify(from) === JSON.stringify(to)) return false;
+  store.dispatch(makeCommand('UPDATE_CATALOG_ENTRY', { catalogId, from, to, ...(reshape ? { reshape } : {}) }));
+  return true;
+};
+
+// The catalog edit drawer (data-cat-update) targets the entry named by the
+// current edit route. On rename the route slug + edit target move to the new
+// name BEFORE dispatching, so the post-dispatch re-render resolves consistently.
+const dispatchCatalogFieldChange = (field, value) => {
+  if (!catalogEditName) return;
+  const entry = (store.state.doc.catalog || []).find((c) => normalizeName(c.name) === catalogEditName);
+  if (!entry) return;
+  if (field === 'name') {
+    const trimmed = String(value).trim();
+    if (!trimmed || trimmed === entry.name) return;
+    catalogEditName = normalizeName(trimmed);
+    const route = parseRoute();
+    if (route.name === 'exercise' && route.editMode) {
+      history.replaceState(null, '', `#/${route.origin || 'dashboard'}/ex/${slugify(trimmed)}/edit`);
+    }
+  }
+  dispatchEntryFieldChange(entry.id, field, value);
 };
 
 // Field updates dispatch on `change` (blur / Enter), not per-keystroke,
@@ -2502,40 +2453,37 @@ const onChange = (e) => {
     const exerciseId = t.dataset.exercise;
     const r = store.state.doc.routines.find((x) => x.id === routineId);
     if (!r) return;
-    const ex = r.exercises.find((e) => e.id === exerciseId);
-    if (!ex) return;
+    const inst = r.exercises.find((e) => e.id === exerciseId);
+    if (!inst) return;
     const field = t.name;
-    const from = structuredClone(ex);
-    const to = structuredClone(ex);
-    if (!Array.isArray(to.series)) to.series = [];
-    if (field === 'name') {
-      to.name = t.value;
-    } else if (field === 'kind') {
-      to.kind = t.value === 'time' ? 'time' : 'reps';
-      to.series = reshapeSeries(to.series, to.kind);
-    } else if (field === 'video') {
-      to.video = t.value.trim() || null;
-    } else if (field === 'notes') {
-      to.notes = t.value;
-    } else if (field === 'unit') {
-      to.unit = t.value === 'lb' ? 'lb' : 'kg';
-    } else if (field === 'series-count') {
+    // Definition fields edit the catalog entry (and propagate to all routines).
+    if (field === 'name' || field === 'kind' || field === 'video' || field === 'notes' || field === 'unit') {
+      dispatchEntryFieldChange(inst.catalogId, field, t.value);
+      return;
+    }
+    // Per-instance series fields.
+    const kind = hydrateExercise(store.state, inst).kind;
+    const from = structuredClone(Array.isArray(inst.series) ? inst.series : []);
+    let to = structuredClone(from);
+    if (field === 'series-count') {
       const n = Math.max(1, Math.min(20, Number(t.value) || 1));
       t.value = n;
-      to.series = resizeSeries(to.series, n, exKind(to));
+      to = resizeSeries(to, n, kind);
     } else if (field === 'duration') {
       // One duration string applies to every set of a time exercise.
-      const n = Math.max(1, to.series.length);
-      to.series = Array.from({ length: n }, () => ({ duration: t.value }));
+      const n = Math.max(1, to.length || 1);
+      to = Array.from({ length: n }, () => ({ duration: t.value }));
     } else if (field === 'series-weight') {
       const i = Number(t.dataset.setIndex);
-      if (to.series[i]) to.series[i] = { ...to.series[i], weight: numOrNull(t.value) };
+      if (to[i]) to[i] = { ...to[i], weight: numOrNull(t.value) };
     } else if (field === 'series-reps') {
       const i = Number(t.dataset.setIndex);
-      if (to.series[i]) to.series[i] = { ...to.series[i], reps: numOrNull(t.value) };
+      if (to[i]) to[i] = { ...to[i], reps: numOrNull(t.value) };
+    } else {
+      return;
     }
     if (JSON.stringify(from) === JSON.stringify(to)) return;
-    store.dispatch(makeCommand('UPDATE_EXERCISE', { routineId, exerciseId, from, to }));
+    store.dispatch(makeCommand('UPDATE_SERIES', { routineId, exerciseId, from, to }));
     return;
   }
 };
@@ -2550,17 +2498,43 @@ const onSubmit = (e) => {
     const kind = document.getElementById('cat-form-kind')?.value === 'time' ? 'time' : 'reps';
     const video = (document.getElementById('cat-form-video')?.value ?? '').trim() || null;
     const notes = (document.getElementById('cat-form-notes')?.value ?? '').trim();
-    const exercise = { id: uid(), name, kind, video, notes };
+    const pickRoutineId = catalogPickRoutineId;
+
+    // The catalog is unique by normalized name — reuse a matching entry instead
+    // of creating a duplicate; otherwise create one.
+    let entry = (store.state.doc.catalog || []).find((c) => normalizeName(c.name) === normalizeName(name));
+    if (!entry) {
+      entry = { id: uid(), name, kind, video, notes, unit: 'kg' };
+      store.dispatch(makeCommand('ADD_CATALOG_EXERCISE', {
+        index: (store.state.doc.catalog ?? []).length, exercise: entry,
+      }));
+      showToast(`Ejercicio "${name}" creado`);
+    } else {
+      showToast(`"${entry.name}" ya estaba en el catálogo`);
+    }
+
+    if (pickRoutineId) {
+      // Created from pick mode: also add a reference to the routine, then edit
+      // the new instance to set its series.
+      catalogFormOpen = false;
+      catalogPickRoutineId = null;
+      const r = store.state.doc.routines.find((x) => x.id === pickRoutineId);
+      if (r) {
+        const exercise = { id: uid(), catalogId: entry.id, series: makeSeries(3, entry.kind) };
+        store.dispatch(makeCommand('ADD_EXERCISE', {
+          routineId: r.id, index: r.exercises.length, exercise,
+        }));
+        go(`#/workout/${r.id}/edit/${exercise.id}`);
+      } else {
+        go('#/catalog');
+      }
+      return;
+    }
+
     // "another" keeps the form open (blank, re-focused) to keep adding;
-    // "close" returns to the catalog manager so the new exercise is visible.
-    const keepOpen = e.submitter?.dataset.catalogFormSubmit === 'another';
-    catalogFormOpen = keepOpen;
-    catalogManagerOpen = !keepOpen;
-    store.dispatch(makeCommand('ADD_CATALOG_EXERCISE', {
-      index: (store.state.doc.catalog ?? []).length, exercise,
-    }));
+    // "close" closes it, revealing the new exercise on the catalog screen.
+    catalogFormOpen = e.submitter?.dataset.catalogFormSubmit === 'another';
     render(store.state);
-    showToast(`Ejercicio "${name}" creado`);
     return;
   }
   if (e.target.id !== 'new-routine-form') return;
@@ -2608,10 +2582,8 @@ const start = async () => {
   window.addEventListener('hashchange', () => {
     menuOpen = false;
     newRoutineOpen = false;
-    catalogManagerOpen = false;
     catalogFormOpen = false;
-    catalogPickerOpen = false;
-    catalogPickerRoutineId = null;
+    catalogPickRoutineId = null;
     catalogFilter = '';
     catalogEditName = null;
     detailRange = '30d';

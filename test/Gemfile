@@ -1,0 +1,19 @@
+# End-to-end test dependencies for the Arnold app.
+#
+# Browser automation runs against a standalone Playwright server. Once-off:
+#
+#   npx playwright install
+#   npx playwright run-server --port 8080 --path /ws
+#
+# Then, from this directory:
+#
+#   bundle install
+#   bundle exec cucumber
+#
+source 'https://rubygems.org'
+
+gem 'cucumber'               # BDD Test Runner
+gem 'playwright-ruby-client' # Playwright API Client for Ruby
+gem 'rspec-expectations'     # For assertions
+gem 'webrick'                # Static server for the docs/ app under test
+gem 'websocket-driver'       # Required to connect to the Playwright browser server

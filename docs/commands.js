@@ -12,9 +12,6 @@ const findRoutine = (state, routineId) =>
 const findExercise = (routine, exerciseId) =>
   routine.exercises.find((e) => e.id === exerciseId);
 
-const findCatalogEntry = (state, id) =>
-  (state.doc.catalog || []).find((c) => c.id === id);
-
 // Session entries are `{ sets: boolean[], snapshot: { name, kind, unit, series,
 // routineId } | null }`. Returns a normalized copy.
 const entryOf = (raw) => {
@@ -58,21 +55,48 @@ export const COMMANDS = {
     coalesceKey: (p) => `clear:${p.date}`,
   },
 
-  // All exercise edits (name, kind, unit, video, notes, and the per-set
-  // `series` — weights, reps, set count) swap the whole exercise via from/to
-  // clones, so undo is exact and there's a single edit command.
-  UPDATE_EXERCISE: {
+  // Per-instance training params: swap one routine reference's `series`
+  // (weights, reps, set count, duration) via from/to clones. Definition
+  // fields live on the catalog entry, not here.
+  UPDATE_SERIES: {
     apply: (s, p) => {
       const r = findRoutine(s, p.routineId);
-      const i = r.exercises.findIndex((e) => e.id === p.exerciseId);
-      r.exercises[i] = structuredClone(p.to);
+      const e = r && findExercise(r, p.exerciseId);
+      if (e) e.series = structuredClone(p.to);
     },
     revert: (s, p) => {
       const r = findRoutine(s, p.routineId);
-      const i = r.exercises.findIndex((e) => e.id === p.exerciseId);
-      r.exercises[i] = structuredClone(p.from);
+      const e = r && findExercise(r, p.exerciseId);
+      if (e) e.series = structuredClone(p.from);
     },
-    coalesceKey: (p) => `update:${p.routineId}:${p.exerciseId}`,
+    coalesceKey: (p) => `series:${p.routineId}:${p.exerciseId}`,
+  },
+
+  // Edit a catalog entry's definition fields (name, kind, video, notes, unit).
+  // Because routines reference the entry, one edit propagates to every routine
+  // automatically. A `kind` change reshapes the `series` of every referencing
+  // instance; `p.reshape: [{ routineId, exerciseId, from, to }]` captures those
+  // per-instance series so undo is exact.
+  UPDATE_CATALOG_ENTRY: {
+    apply: (s, p) => {
+      const i = (s.doc.catalog || []).findIndex((c) => c.id === p.catalogId);
+      if (i >= 0) s.doc.catalog[i] = structuredClone(p.to);
+      for (const t of (p.reshape || [])) {
+        const r = findRoutine(s, t.routineId);
+        const e = r && findExercise(r, t.exerciseId);
+        if (e) e.series = structuredClone(t.to);
+      }
+    },
+    revert: (s, p) => {
+      const i = (s.doc.catalog || []).findIndex((c) => c.id === p.catalogId);
+      if (i >= 0) s.doc.catalog[i] = structuredClone(p.from);
+      for (const t of (p.reshape || [])) {
+        const r = findRoutine(s, t.routineId);
+        const e = r && findExercise(r, t.exerciseId);
+        if (e) e.series = structuredClone(t.from);
+      }
+    },
+    coalesceKey: (p) => `cat-entry:${p.catalogId}`,
   },
 
   ADD_EXERCISE: {
@@ -146,89 +170,11 @@ export const COMMANDS = {
     coalesceKey: (p) => `add-cat:${p.exercise.id}`,
   },
 
-  // Bulk catalog operations — act on every routine.exercise matching a
-  // normalized name. `targets: [{ routineId, exerciseId, fromValue }]`
-  // captures one row per matching instance so revert is exact.
-  CATALOG_RENAME: {
-    apply: (s, p) => {
-      for (const t of p.targets) {
-        const r = findRoutine(s, t.routineId);
-        if (!r) continue;
-        const e = findExercise(r, t.exerciseId);
-        if (e) e.name = p.toName;
-      }
-      // Keep the standalone catalog definition (if any) in sync.
-      if (p.catalogTarget) {
-        const c = findCatalogEntry(s, p.catalogTarget.id);
-        if (c) c.name = p.toName;
-      }
-    },
-    revert: (s, p) => {
-      for (const t of p.targets) {
-        const r = findRoutine(s, t.routineId);
-        if (!r) continue;
-        const e = findExercise(r, t.exerciseId);
-        if (e) e.name = t.fromValue;
-      }
-      if (p.catalogTarget) {
-        const c = findCatalogEntry(s, p.catalogTarget.id);
-        if (c) c.name = p.catalogTarget.fromValue;
-      }
-    },
-    coalesceKey: (p) => `cat-rename:${p.toName}`,
-  },
-
-  // Generic per-field bulk update for definition-level fields (`video|notes`).
-  // Routine params (series) are per-instance and not bulk-edited. Targets keep
-  // `fromValue` per instance.
-  CATALOG_UPDATE_FIELD: {
-    apply: (s, p) => {
-      for (const t of p.targets) {
-        const r = findRoutine(s, t.routineId);
-        if (!r) continue;
-        const e = findExercise(r, t.exerciseId);
-        if (!e) continue;
-        e[p.field] = p.toValue === null || p.toValue === undefined
-          ? (p.field === 'video' ? null : '')
-          : (typeof p.toValue === 'object' ? structuredClone(p.toValue) : p.toValue);
-      }
-      // Sync the standalone catalog definition for definition-level fields
-      // (kind/video/notes). Routine-only fields carry no catalogTarget.
-      if (p.catalogTarget) {
-        const c = findCatalogEntry(s, p.catalogTarget.id);
-        if (c) {
-          c[p.field] = p.toValue === null || p.toValue === undefined
-            ? (p.field === 'video' ? null : '')
-            : (typeof p.toValue === 'object' ? structuredClone(p.toValue) : p.toValue);
-        }
-      }
-    },
-    revert: (s, p) => {
-      for (const t of p.targets) {
-        const r = findRoutine(s, t.routineId);
-        if (!r) continue;
-        const e = findExercise(r, t.exerciseId);
-        if (!e) continue;
-        e[p.field] = t.fromValue === null || t.fromValue === undefined
-          ? (p.field === 'video' ? null : '')
-          : (typeof t.fromValue === 'object' ? structuredClone(t.fromValue) : t.fromValue);
-      }
-      if (p.catalogTarget) {
-        const c = findCatalogEntry(s, p.catalogTarget.id);
-        if (c) {
-          c[p.field] = p.catalogTarget.fromValue === null || p.catalogTarget.fromValue === undefined
-            ? (p.field === 'video' ? null : '')
-            : (typeof p.catalogTarget.fromValue === 'object' ? structuredClone(p.catalogTarget.fromValue) : p.catalogTarget.fromValue);
-        }
-      }
-    },
-    coalesceKey: (p) => `cat-field:${p.field}:${p.name}`,
-  },
-
-  // Remove every instance of a catalog exercise from all routines.
+  // Delete a catalog entry and cascade-remove every routine reference to it.
   // Sessions are preserved (they're historical records). `targets:
-  // [{ routineId, index, exercise }]` captures position + full exercise
-  // for revert.
+  // [{ routineId, index, exercise }]` captures each reference's position +
+  // full instance, and `catalogTarget: { id, index, exercise }` the entry,
+  // so undo restores everything exactly.
   CATALOG_DELETE: {
     apply: (s, p) => {
       // Remove from each routine, descending index so splices don't shift.
