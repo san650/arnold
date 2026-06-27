@@ -12,11 +12,12 @@ const findRoutine = (state, routineId) =>
 const findExercise = (routine, exerciseId) =>
   routine.exercises.find((e) => e.id === exerciseId);
 
-// Session entries are `{ sets: boolean[], snapshot: { name, kind, weight,
-// duration, reps } | null }`. Legacy boolean[] entries are migrated on boot
-// (see app.js). This helper accepts either shape and returns the new one.
+const findCatalogEntry = (state, id) =>
+  (state.doc.catalog || []).find((c) => c.id === id);
+
+// Session entries are `{ sets: boolean[], snapshot: { name, kind, unit, series,
+// routineId } | null }`. Returns a normalized copy.
 const entryOf = (raw) => {
-  if (Array.isArray(raw)) return { sets: [...raw], snapshot: null };
   if (raw && typeof raw === 'object') {
     return { sets: Array.isArray(raw.sets) ? [...raw.sets] : [], snapshot: raw.snapshot ?? null };
   }
@@ -57,20 +58,9 @@ export const COMMANDS = {
     coalesceKey: (p) => `clear:${p.date}`,
   },
 
-  SET_WEIGHT: {
-    apply: (s, p) => {
-      const r = findRoutine(s, p.routineId);
-      const e = findExercise(r, p.exerciseId);
-      e.weight = p.to ? { ...p.to } : null;
-    },
-    revert: (s, p) => {
-      const r = findRoutine(s, p.routineId);
-      const e = findExercise(r, p.exerciseId);
-      e.weight = p.from ? { ...p.from } : null;
-    },
-    coalesceKey: (p) => `weight:${p.routineId}:${p.exerciseId}`,
-  },
-
+  // All exercise edits (name, kind, unit, video, notes, and the per-set
+  // `series` — weights, reps, set count) swap the whole exercise via from/to
+  // clones, so undo is exact and there's a single edit command.
   UPDATE_EXERCISE: {
     apply: (s, p) => {
       const r = findRoutine(s, p.routineId);
@@ -141,6 +131,21 @@ export const COMMANDS = {
     coalesceKey: (p) => `rm-r:${p.routine.id}`,
   },
 
+  // Add a standalone exercise definition to the catalog. Catalog entries hold
+  // only the definition (name, kind, image/video, notes); routine-specific
+  // params (sets/reps/duration/weight) are set on the routine instance.
+  ADD_CATALOG_EXERCISE: {
+    apply: (s, p) => {
+      if (!Array.isArray(s.doc.catalog)) s.doc.catalog = [];
+      s.doc.catalog.splice(p.index, 0, structuredClone(p.exercise));
+    },
+    revert: (s, p) => {
+      if (!Array.isArray(s.doc.catalog)) return;
+      s.doc.catalog.splice(p.index, 1);
+    },
+    coalesceKey: (p) => `add-cat:${p.exercise.id}`,
+  },
+
   // Bulk catalog operations — act on every routine.exercise matching a
   // normalized name. `targets: [{ routineId, exerciseId, fromValue }]`
   // captures one row per matching instance so revert is exact.
@@ -152,6 +157,11 @@ export const COMMANDS = {
         const e = findExercise(r, t.exerciseId);
         if (e) e.name = p.toName;
       }
+      // Keep the standalone catalog definition (if any) in sync.
+      if (p.catalogTarget) {
+        const c = findCatalogEntry(s, p.catalogTarget.id);
+        if (c) c.name = p.toName;
+      }
     },
     revert: (s, p) => {
       for (const t of p.targets) {
@@ -160,12 +170,17 @@ export const COMMANDS = {
         const e = findExercise(r, t.exerciseId);
         if (e) e.name = t.fromValue;
       }
+      if (p.catalogTarget) {
+        const c = findCatalogEntry(s, p.catalogTarget.id);
+        if (c) c.name = p.catalogTarget.fromValue;
+      }
     },
     coalesceKey: (p) => `cat-rename:${p.toName}`,
   },
 
-  // Generic per-field bulk update. `field` is one of `kind|reps|duration|
-  // weight|video|notes|sets`. Targets keep `fromValue` per instance.
+  // Generic per-field bulk update for definition-level fields (`video|notes`).
+  // Routine params (series) are per-instance and not bulk-edited. Targets keep
+  // `fromValue` per instance.
   CATALOG_UPDATE_FIELD: {
     apply: (s, p) => {
       for (const t of p.targets) {
@@ -174,8 +189,18 @@ export const COMMANDS = {
         const e = findExercise(r, t.exerciseId);
         if (!e) continue;
         e[p.field] = p.toValue === null || p.toValue === undefined
-          ? (p.field === 'weight' || p.field === 'video' ? null : '')
+          ? (p.field === 'video' ? null : '')
           : (typeof p.toValue === 'object' ? structuredClone(p.toValue) : p.toValue);
+      }
+      // Sync the standalone catalog definition for definition-level fields
+      // (kind/video/notes). Routine-only fields carry no catalogTarget.
+      if (p.catalogTarget) {
+        const c = findCatalogEntry(s, p.catalogTarget.id);
+        if (c) {
+          c[p.field] = p.toValue === null || p.toValue === undefined
+            ? (p.field === 'video' ? null : '')
+            : (typeof p.toValue === 'object' ? structuredClone(p.toValue) : p.toValue);
+        }
       }
     },
     revert: (s, p) => {
@@ -185,8 +210,16 @@ export const COMMANDS = {
         const e = findExercise(r, t.exerciseId);
         if (!e) continue;
         e[p.field] = t.fromValue === null || t.fromValue === undefined
-          ? (p.field === 'weight' || p.field === 'video' ? null : '')
+          ? (p.field === 'video' ? null : '')
           : (typeof t.fromValue === 'object' ? structuredClone(t.fromValue) : t.fromValue);
+      }
+      if (p.catalogTarget) {
+        const c = findCatalogEntry(s, p.catalogTarget.id);
+        if (c) {
+          c[p.field] = p.catalogTarget.fromValue === null || p.catalogTarget.fromValue === undefined
+            ? (p.field === 'video' ? null : '')
+            : (typeof p.catalogTarget.fromValue === 'object' ? structuredClone(p.catalogTarget.fromValue) : p.catalogTarget.fromValue);
+        }
       }
     },
     coalesceKey: (p) => `cat-field:${p.field}:${p.name}`,
@@ -210,6 +243,11 @@ export const COMMANDS = {
         ts.sort((a, b) => b.index - a.index);
         for (const t of ts) r.exercises.splice(t.index, 1);
       }
+      // Also remove the standalone catalog definition, if any.
+      if (p.catalogTarget && Array.isArray(s.doc.catalog)) {
+        const i = s.doc.catalog.findIndex((c) => c.id === p.catalogTarget.id);
+        if (i >= 0) s.doc.catalog.splice(i, 1);
+      }
     },
     revert: (s, p) => {
       // Re-insert ascending so each splice lands at the captured index.
@@ -223,6 +261,10 @@ export const COMMANDS = {
         if (!r) continue;
         ts.sort((a, b) => a.index - b.index);
         for (const t of ts) r.exercises.splice(t.index, 0, structuredClone(t.exercise));
+      }
+      if (p.catalogTarget) {
+        if (!Array.isArray(s.doc.catalog)) s.doc.catalog = [];
+        s.doc.catalog.splice(p.catalogTarget.index, 0, structuredClone(p.catalogTarget.exercise));
       }
     },
     coalesceKey: (p) => `cat-del:${p.name}`,
