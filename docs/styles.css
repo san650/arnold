@@ -16,6 +16,13 @@
   --ok: var(--accent);
   --shadow: 0 1px 0 rgba(0, 0, 0, 0.4), 0 8px 24px -8px rgba(0, 0, 0, 0.55);
 
+  /* Opaque plate behind sticky chrome (headers, drawer caps, footers) so
+     scrolling content can never bleed through. #1a1d24 == bg-elev's rgb at
+     full alpha, so caps read identically to the translucent body. */
+  --surface-solid: #1a1d24;
+  --head-blur: saturate(150%) blur(16px);
+  --head-elev: 0 10px 28px -20px rgba(0, 0, 0, 0.95);
+
   --col: min(100% - 1.5rem, 480px);
   --gutter: 0.75rem;
   --radius: 14px;
@@ -77,8 +84,10 @@ html, body {
   z-index: 2;
   background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200' viewBox='0 0 200 200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.08 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
   background-size: 200px 200px;
-  mix-blend-mode: overlay;
-  opacity: 0.5;
+  /* No mix-blend-mode: a full-screen blend layer overlapping the app's
+     backdrop-filter glass demotes to per-frame CPU rasterization on iOS.
+     Plain white grain at low opacity gives the same film texture. */
+  opacity: 0.12;
 }
 
 main {
@@ -88,8 +97,9 @@ main {
   margin-inline: auto;
   min-height: 100dvh;
   padding-top: max(var(--gutter), env(safe-area-inset-top));
-  /* leave room for the fixed bottom bar */
-  padding-bottom: calc(72px + max(0.5rem, env(safe-area-inset-bottom)));
+  /* leave room for the fixed bottom bar, plus breathing room so the last
+     card never crowds the glass bar on short pages */
+  padding-bottom: calc(88px + max(0.5rem, env(safe-area-inset-bottom)));
 }
 
 body {
@@ -339,11 +349,19 @@ input:focus, select:focus, textarea:focus {
   align-items: center;
   padding: max(var(--gutter), env(safe-area-inset-top)) 0 0.625rem;
   margin: calc(-1 * max(var(--gutter), env(safe-area-inset-top))) 0 0.75rem;
-  background: linear-gradient(180deg, var(--bg) 30%, rgba(14,16,20,0.85) 90%, rgba(14,16,20,0) 100%);
-  -webkit-backdrop-filter: blur(8px);
-  backdrop-filter: blur(8px);
-  border-radius: 0 0 1rem 1rem;
+  /* Near-opaque frosted plate. The old gradient faded to fully transparent
+     at its bottom edge, so scrolling cards showed through it. This stays
+     >=0.86 alpha the whole way down — content is hidden, the photo stays
+     subtly alive through the blur. */
+  background: linear-gradient(180deg, rgba(12,14,18,0.96) 0%, rgba(12,14,18,0.88) 100%);
+  -webkit-backdrop-filter: var(--head-blur);
+  backdrop-filter: var(--head-blur);
+  /* Divider + lift appear only when stuck (see .is-stuck below). */
+  border-bottom: 1px solid transparent;
+  box-shadow: none;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
+.workout-bar.is-stuck { border-bottom-color: var(--line); box-shadow: var(--head-elev); }
 /* Icon-only back button — translucent, no chrome, melts into the
    sticky top toolbar. Big chevron, generous tap target. */
 .back-btn {
@@ -876,7 +894,9 @@ button.video-link { font: inherit; font-weight: 600; font-size: 0.85rem; }
   border-bottom: none;
   border-radius: 22px 22px 0 0;
   z-index: 60;
-  padding: 0.5rem 1rem max(1rem, env(safe-area-inset-bottom)) 1rem;
+  /* Top padding lives in .drawer-head (the sticky cap) so the cap can sit
+     flush to the drawer's top edge with nothing bleeding above it. */
+  padding: 0 1rem max(1rem, env(safe-area-inset-bottom));
   max-height: 90dvh;
   overflow-y: auto;
   animation: drawer-slide 0.22s cubic-bezier(.22, .8, .25, 1);
@@ -886,18 +906,31 @@ button.video-link { font: inherit; font-weight: 600; font-size: 0.85rem; }
   width: 40px; height: 4px;
   background: var(--line-strong);
   border-radius: 999px;
-  margin: 0.375rem auto 0.625rem;
+  margin: 0.5rem auto 0.625rem;
 }
+/* Sticky solid cap: handle + title (+ optional search) ride together at the
+   top of every drawer. Full-bleed via negative margins; opaque so body
+   content scrolling under it can't ghost through. */
+.drawer-head {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  margin: 0 -1rem;
+  padding: 0 1rem 0.75rem;
+  background: var(--surface-solid);
+  border-bottom: 1px solid transparent;
+  box-shadow: none;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.drawer-head.is-stuck { border-bottom-color: var(--line); box-shadow: var(--head-elev); }
+.drawer-head .drawer-header { position: static; margin-bottom: 0; padding-block: 0; background: none; }
+.drawer-head .catalog-filter-wrap { margin: 0.625rem 0 0; }
 .drawer-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
   margin-bottom: 0.75rem;
-  position: sticky;
-  top: 0;
-  background: var(--bg-elev);
-  padding-block: 0.25rem 0.5rem;
 }
 .drawer-header h3 {
   font-family: var(--display);
@@ -919,6 +952,17 @@ button.video-link { font: inherit; font-weight: 600; font-size: 0.85rem; }
 .drawer.no-anim, .drawer-backdrop.no-anim { animation: none; }
 
 body[data-drawer-open] { overflow: hidden; }
+
+/* Respect users who ask for less motion: kill drawer slide/fade, header lift
+   transitions, and any incidental animation, but keep instant state changes. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
 
 /* ---------- Stopwatch overlay ---------- */
 
@@ -1008,11 +1052,15 @@ body[data-drawer-open] { overflow: hidden; }
   justify-content: center;
   padding: max(2rem, env(safe-area-inset-top)) 1.5rem max(2rem, env(safe-area-inset-bottom));
   cursor: pointer;
+  /* Static blur (animating backdrop-filter snapshots the backdrop every
+     frame on iOS); only the background alpha tweens. */
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
   animation: motivation-bg 0.6s ease-out both;
 }
 @keyframes motivation-bg {
-  from { background: rgba(14, 16, 20, 0); -webkit-backdrop-filter: blur(0px); backdrop-filter: blur(0px); }
-  to   { background: rgba(14, 16, 20, 0.55); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+  from { background: rgba(14, 16, 20, 0); }
+  to   { background: rgba(14, 16, 20, 0.55); }
 }
 
 .motivation .quote {
@@ -1033,10 +1081,9 @@ body[data-drawer-open] { overflow: hidden; }
   opacity: 0;
   transform: translateY(10px);
   animation: word-in 0.55s cubic-bezier(.22, .8, .25, 1) both;
-  filter: blur(2px);
 }
 @keyframes word-in {
-  to { opacity: 1; transform: translateY(0); filter: blur(0); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .motivation-hint {
@@ -1168,7 +1215,7 @@ body[data-drawer-open] { overflow: hidden; }
 
 /* ---------- Menu sheet (bottom kebab drawer) ---------- */
 
-.drawer-menu .drawer-header { border-bottom: 1px solid var(--line); }
+.drawer-menu .drawer-head { padding-bottom: 0; }
 .menu-cache-version {
   margin-left: 0.4rem;
   font-family: var(--mono, monospace);
@@ -1346,8 +1393,8 @@ button.danger-primary:active { background: #d33b3b; }
   padding-right: max(var(--gutter), env(safe-area-inset-right));
   padding-bottom: calc(0.55rem + env(safe-area-inset-bottom));
   background: rgba(14, 16, 20, 0.78);
-  -webkit-backdrop-filter: saturate(140%) blur(14px);
-  backdrop-filter: saturate(140%) blur(14px);
+  -webkit-backdrop-filter: saturate(140%) blur(8px);
+  backdrop-filter: saturate(140%) blur(8px);
   border-top: 1px solid var(--line);
 }
 .bottom-bar-inner {
@@ -1666,14 +1713,102 @@ button.danger-primary:active { background: #d33b3b; }
 
 /* ---------- Catalog screen (view / edit / pick) ---------- */
 
+/* Sticky screen header that pins the title bar AND the search field together,
+   so search never scrolls out of reach. One frosted plate covers both rows. */
+.screen-head {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  margin: calc(-1 * max(var(--gutter), env(safe-area-inset-top))) 0 0.75rem;
+  padding: max(var(--gutter), env(safe-area-inset-top)) 0 0.625rem;
+  background: linear-gradient(180deg, rgba(12,14,18,0.97) 0%, rgba(12,14,18,0.9) 100%);
+  -webkit-backdrop-filter: var(--head-blur);
+  backdrop-filter: var(--head-blur);
+  border-bottom: 1px solid transparent;
+  box-shadow: none;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.screen-head.is-stuck { border-bottom-color: var(--line); box-shadow: var(--head-elev); }
+/* The title bar drops its own plate when nested in a screen-head. */
+.screen-head .workout-bar {
+  position: static;
+  margin: 0;
+  padding: 0 0 0.5rem;
+  background: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  border-bottom: 0;
+  box-shadow: none;
+}
+.screen-head .catalog-filter-wrap { margin-bottom: 0; }
+
 .catalog-filter-wrap {
   position: relative;
   margin-bottom: 0.625rem;
 }
-.catalog-filter {
+/* Wrapper-scoped so it outranks input[type="text"]'s padding shorthand. */
+.catalog-filter-wrap .catalog-filter {
   background: var(--bg-elev-2);
   border: 1px solid var(--line-strong);
+  padding-left: 2.75rem; /* room for the leading glyph */
 }
+/* Leading magnifier glyph baked into every search field. */
+.search-ic {
+  position: absolute;
+  left: 0.85rem;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 18px;
+  height: 18px;
+  color: var(--muted-2);
+  pointer-events: none;
+}
+.catalog-filter:focus {
+  background: var(--bg-elev);
+}
+.catalog-filter-wrap:focus-within .search-ic { color: var(--accent); }
+/* Make room for the trailing clear button only when a query is present. */
+.catalog-filter-wrap.has-text .catalog-filter { padding-right: 2.75rem; }
+.search-clear {
+  position: absolute;
+  right: 0.4rem;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 34px;
+  height: 34px;
+  min-height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: var(--bg-elev-2);
+  color: var(--muted);
+}
+.search-clear:active { transform: translateY(-50%) scale(0.9); color: var(--fg); }
+
+/* Empty search result — a centered dead-end that offers to create the query. */
+.search-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 0.75rem;
+  padding: 2.25rem 1rem 1.5rem;
+}
+.search-empty-ic {
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  color: var(--muted-2);
+}
+.search-empty-ic .search-ic { position: static; transform: none; width: 20px; height: 20px; }
+.search-empty-msg { margin: 0; color: var(--fg-dim); font-size: 0.95rem; }
+.search-empty-msg strong { color: var(--fg); font-weight: 700; }
+.search-empty-cta { max-width: 100%; }
 .catalog-section { margin-top: 0.875rem; margin-bottom: 0.5rem; }
 .catalog-new {
   display: flex;
@@ -2024,7 +2159,14 @@ button.danger-primary:active { background: #d33b3b; }
 .build-nav .ghost:disabled { opacity: 0.4; }
 
 /* Multi-select picker sheet */
-.build-pick-drawer { display: flex; flex-direction: column; }
+.build-pick-drawer {
+  display: flex;
+  flex-direction: column;
+  /* No bottom padding: the sticky .build-pick-foot owns the bottom edge and
+     carries its own safe-area inset. Drawer padding here would float the
+     footer up and expose a row beneath it. */
+  padding-bottom: 0;
+}
 .build-pick-list { display: flex; flex-direction: column; gap: 0.375rem; }
 .build-pick-row {
   display: grid;
@@ -2066,7 +2208,9 @@ button.danger-primary:active { background: #d33b3b; }
   bottom: 0;
   margin: 0.5rem -1rem 0;
   padding: 0.75rem 1rem max(0.5rem, env(safe-area-inset-bottom));
-  background: var(--bg-elev);
+  /* Solid (was var(--bg-elev) @ .9) so list rows can't bleed through. */
+  background: var(--surface-solid);
   border-top: 1px solid var(--line);
+  box-shadow: 0 -12px 30px -22px rgba(0, 0, 0, 0.95);
 }
 .build-pick-foot button { width: 100%; padding: 0.85rem; }

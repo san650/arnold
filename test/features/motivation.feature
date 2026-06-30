@@ -1,3 +1,4 @@
+@smoke
 Feature: Daily motivation
   As a lifter
   I want a motivational quote when I tap the title

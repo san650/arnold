@@ -1,0 +1,8 @@
+{
+  "routines": [
+    { "id": "imp1", "name": "Importada Uno", "exercises": [] },
+    { "id": "imp2", "name": "Importada Dos", "exercises": [] }
+  ],
+  "catalog": [],
+  "sessions": {}
+}

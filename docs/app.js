@@ -4,15 +4,61 @@ import { loadQuotes, saveQuotes } from './db.js';
 
 const root = document.getElementById('view');
 
+// ---------- transient UI state ----------
+// Ephemeral view state — open sheets, filters, the kebab menu — neither
+// persisted nor in the URL. resetTransient() drops everything a navigation
+// should clear; expandedMedia and the render bookkeeping deliberately survive.
+const UI_DEFAULTS = {
+  menuOpen: false, newRoutineOpen: false, catalogFormOpen: false, catalogPickRoutineId: null,
+  catalogFilter: '', catalogEditName: null, detailRange: '30d', buildPickOpen: false, buildPickFilter: '',
+  catalogFormPrefill: '', // seeds the create-form name (from an empty-search "Crear …" tap)
+};
+const ui = {
+  ...UI_DEFAULTS,
+  buildPickSelected: new Set(), // catalogIds ticked in the build picker
+  expandedMedia: new Set(),     // exercises with media expanded (survives nav)
+  lastDrawerOpen: false,        // suppress the drawer slide-anim on same-state re-render
+  lastRouteKey: null,           // detect same-route re-render for scroll preservation
+  cacheVersion: '',             // service-worker cache tag, shown in the kebab menu
+};
+const resetTransient = () => {
+  Object.assign(ui, UI_DEFAULTS);
+  ui.buildPickSelected.clear();
+  if (stopwatchTimer) { clearInterval(stopwatchTimer); stopwatchTimer = null; }
+  releaseWakeLock();
+  stopwatchOpen = false;
+};
+
 // ---------- safe rendering ----------
+//
+// Views are written with the `html` tagged template. Every interpolated value
+// is escaped by default, so dynamic text can never inject markup; a value
+// wrapped in `raw()` — or itself produced by `html` — is trusted and passed
+// through, and arrays are flattened. The result is a `Safe` string that
+// `mount()` parses into a Fragment (no script execution, no inline handlers).
 
-// All dynamic strings are escaped via `esc()` before being interpolated.
-// The view is mounted as a parsed Fragment (no script execution, no
-// inline event-handler attributes) rather than via innerHTML assignment.
+class Safe {
+  constructor(value) { this.value = value; }
+  toString() { return this.value; }
+}
+const raw = (s) => new Safe(String(s ?? ''));
 
-const esc = (s) => String(s ?? '')
-  .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
-  .replaceAll('"', '&quot;').replaceAll("'", '&#039;');
+const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ESC[c]);
+
+// Render one interpolated value: trusted markup passes through, arrays flatten,
+// null/undefined vanish, everything else (incl. numbers/booleans) is escaped.
+const part = (v) =>
+  v == null ? '' :
+  v instanceof Safe ? v.value :
+  Array.isArray(v) ? v.map(part).join('') :
+  esc(v);
+
+const html = (strings, ...values) =>
+  new Safe(strings.reduce((out, s, i) => out + s + (i < values.length ? part(values[i]) : ''), ''));
+
+// Stable test hook, raw so the quotes survive: html`<li ${dataTest('catalog-item')}>`.
+const dataTest = (id) => raw(`data-test-id="${id}"`);
 
 // Only allow http/https/youtube links. Block javascript:/data: in hrefs.
 const safeUrl = (raw) => {
@@ -33,15 +79,12 @@ const parseMedia = (url) => {
   return { kind: 'link', url };
 };
 
-// Transient: which exercises have their media expanded. Not persisted.
-const expandedMedia = new Set();
-
-const mount = (htmlString) => {
+const mount = (markup) => {
   const range = document.createRange();
   range.selectNodeContents(root);
   range.deleteContents();
   range.setStart(root, 0);
-  const frag = range.createContextualFragment(htmlString);
+  const frag = range.createContextualFragment(String(markup));
   root.appendChild(frag);
 };
 
@@ -135,19 +178,19 @@ const confirmModal = ({ title, message, confirmLabel = 'Confirmar', cancelLabel 
   return new Promise((resolve) => {
     const wrap = document.createElement('div');
     wrap.className = 'modal-wrap';
-    const html = `
+    const markup = html`
       <div class="modal-backdrop" data-modal-action="cancel"></div>
       <div class="modal-dialog" role="dialog" aria-modal="true">
-        ${title ? `<h3>${esc(title)}</h3>` : ''}
-        ${message ? `<p>${esc(message)}</p>` : ''}
+        ${title ? html`<h3>${title}</h3>` : ''}
+        ${message ? html`<p>${message}</p>` : ''}
         <div class="modal-actions">
-          ${cancelLabel ? `<button class="ghost" data-modal-action="cancel">${esc(cancelLabel)}</button>` : ''}
-          <button class="${destructive ? 'danger-primary' : 'primary'}" data-modal-action="confirm">${esc(confirmLabel)}</button>
+          ${cancelLabel ? html`<button class="ghost" data-modal-action="cancel">${cancelLabel}</button>` : ''}
+          <button class="${destructive ? 'danger-primary' : 'primary'}" data-modal-action="confirm">${confirmLabel}</button>
         </div>
       </div>`;
     const range = document.createRange();
     range.selectNodeContents(wrap);
-    const frag = range.createContextualFragment(html);
+    const frag = range.createContextualFragment(String(markup));
     wrap.appendChild(frag);
     document.body.appendChild(wrap);
     let resolved = false;
@@ -182,19 +225,6 @@ const showToast = (msg) => {
   toastTimer = setTimeout(() => { t.remove(); toastTimer = null; }, 2700);
 };
 
-// Tracks whether the drawer was already open in the previous render so
-// subsequent re-renders (auto-saves) don't replay the slide-up animation.
-let lastDrawerOpen = false;
-
-// Tracks last route serialization so we can decide whether a re-render is
-// for the same view (preserve scroll) or a navigation (scroll to top).
-let lastRouteKey = null;
-
-// Transient: bottom kebab menu open state (not persisted, not URL-routed).
-let menuOpen = false;
-// Service worker cache version (e.g. "v13"), surfaced in the kebab menu.
-let cacheVersion = '';
-
 const requestCacheVersion = async () => {
   if (!('serviceWorker' in navigator)) return;
   try {
@@ -207,33 +237,24 @@ const requestCacheVersion = async () => {
       sw.postMessage({ type: 'GET_VERSION' }, [channel.port2]);
     });
     const tag = v.replace(/^.*-(v\d+)$/, '$1');
-    if (tag && tag !== cacheVersion) {
-      cacheVersion = tag;
-      if (menuOpen) render(store.state);
+    if (tag && tag !== ui.cacheVersion) {
+      ui.cacheVersion = tag;
+      if (ui.menuOpen) render(store.state);
     }
   } catch {}
 };
 requestCacheVersion();
-// Transient: "new routine" name-entry drawer (open from the edit list).
-let newRoutineOpen = false;
-// Transient: the "create exercise" form drawer, opened from the catalog
-// screen's add control. When opened from pick mode, `catalogPickRoutineId`
-// remembers the routine to also add the new exercise to.
-let catalogFormOpen = false;
-let catalogPickRoutineId = null;
-// Catalog screen search filter text. Reset on hashchange.
-let catalogFilter = '';
-// Transient: the guided week builder's multi-select picker sheet (slides up
-// over a build step). `buildPickSelected` holds the catalogIds ticked so far;
-// `buildPickFilter` is its search box. All reset on hashchange.
-let buildPickOpen = false;
-const buildPickSelected = new Set();
-let buildPickFilter = '';
-// Transient: which catalog entry the edit drawer targets (normalized name),
-// kept in sync with the exercise-detail edit route.
-let catalogEditName = null;
-// Transient: range toggle on exercise detail view.
-let detailRange = '30d';
+
+// Auto-reload once when the SW activates a new shell (single-reload updates).
+let reloadingForUpdate = false;
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('message', (e) => {
+    if (e.data?.type === 'RELOAD' && !reloadingForUpdate) {
+      reloadingForUpdate = true;
+      location.reload();
+    }
+  });
+}
 // Transient: in-workout stopwatch overlay. Each open starts from zero;
 // tick interval drives a single DOM text node (no store dispatches).
 let stopwatchOpen = false;
@@ -644,87 +665,113 @@ const reshapeSeries = (series, kind) => (series.length ? series : [blankEntry(ki
 
 // ---------- routing ----------
 
+// A route is `#/<segment>/…`. Each parser turns the path segments into a route
+// object; the leading segment selects the parser. An `ex/:slug[/edit]` tail is
+// shared by catalog and dashboard, hence `exerciseRoute(origin)`.
+const exerciseRoute = (origin) => (p) => {
+  const r = { name: 'exercise', slug: p[2], origin };
+  if (p[3] === 'edit') r.editMode = true;
+  return r;
+};
+const routeParsers = {
+  workout: (p) => {
+    if (!p[1]) return { name: 'home' };
+    const r = { name: 'workout', routineId: p[1] };
+    if (p[2] === 'edit') { r.editMode = true; if (p[3]) r.editExerciseId = p[3]; }
+    return r;
+  },
+  build: (p) => {
+    const r = { name: 'build', step: Math.max(0, Math.min(11, Number(p[1]) || 0)) };
+    if (p[2] === 'ex' && p[3]) r.editExerciseId = p[3];
+    return r;
+  },
+  catalog: (p) => {
+    if (p[1] === 'edit') return { name: 'catalog', mode: 'edit' };
+    if (p[1] === 'pick' && p[2]) return { name: 'catalog', mode: 'pick', routineId: p[2] };
+    if (p[1] === 'ex' && p[2]) return exerciseRoute('catalog')(p);
+    return { name: 'catalog', mode: 'view' };
+  },
+  dashboard: (p) => (p[1] === 'ex' && p[2]) ? exerciseRoute('dashboard')(p) : { name: 'dashboard' },
+  edit: () => ({ name: 'edit' }),
+  log: () => ({ name: 'log' }),
+  motivation: () => ({ name: 'motivation' }),
+};
+
 const parseRoute = () => {
   const h = location.hash.replace(/^#\/?/, '');
   if (!h) return { name: 'home' };
   const parts = h.split('/');
-  if (parts[0] === 'workout' && parts[1]) {
-    const r = { name: 'workout', routineId: parts[1] };
-    if (parts[2] === 'edit') {
-      r.editMode = true;
-      if (parts[3]) r.editExerciseId = parts[3];
-    }
-    return r;
-  }
-  if (parts[0] === 'edit') return { name: 'edit' };
-  if (parts[0] === 'build') {
-    const step = Math.max(0, Math.min(11, Number(parts[1]) || 0));
-    const r = { name: 'build', step };
-    if (parts[2] === 'ex' && parts[3]) r.editExerciseId = parts[3];
-    return r;
-  }
-  if (parts[0] === 'log') return { name: 'log' };
-  if (parts[0] === 'motivation') return { name: 'motivation' };
-  if (parts[0] === 'catalog') {
-    if (parts[1] === 'edit') return { name: 'catalog', mode: 'edit' };
-    if (parts[1] === 'pick' && parts[2]) return { name: 'catalog', mode: 'pick', routineId: parts[2] };
-    if (parts[1] === 'ex' && parts[2]) {
-      const r = { name: 'exercise', slug: parts[2], origin: 'catalog' };
-      if (parts[3] === 'edit') r.editMode = true;
-      return r;
-    }
-    return { name: 'catalog', mode: 'view' };
-  }
-  if (parts[0] === 'dashboard') {
-    if (parts[1] === 'ex' && parts[2]) {
-      const r = { name: 'exercise', slug: parts[2], origin: 'dashboard' };
-      if (parts[3] === 'edit') r.editMode = true;
-      return r;
-    }
-    return { name: 'dashboard' };
-  }
-  return { name: 'home' };
+  return (routeParsers[parts[0]] ?? (() => ({ name: 'home' })))(parts);
 };
 
 const go = (path) => { location.hash = path; };
 
 // ---------- views ----------
 
-// SVG icons used in the bottom toolbar.
-const iconUndo = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg>`;
-const iconRedo = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 14l5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/></svg>`;
-const iconKebab = `<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="12" cy="19" r="1.7"/></svg>`;
-const iconBack = `<svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>`;
-const iconStopwatch = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="14" r="7"/><polyline points="12 11 12 14 14.5 14"/><line x1="10" y1="3" x2="14" y2="3"/><line x1="12" y1="3" x2="12" y2="5"/></svg>`;
-// Compact bar-chart glyph — ascending columns, used to enter the dashboard.
-const iconChart = `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="3" y1="20" x2="21" y2="20"/><rect x="5" y="13" width="3" height="6" rx="0.5"/><rect x="10.5" y="9" width="3" height="10" rx="0.5"/><rect x="16" y="5" width="3" height="14" rx="0.5"/></svg>`;
-const iconEdit = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4l6 6"/><path d="M3 21l4-1 11.5-11.5-3-3L4 17l-1 4z"/></svg>`;
-const iconTrash = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>`;
+// SVG icon set (each is trusted markup → raw). `dumbbell`/`clock` tag exercise
+// kind in the catalog; the rest are chrome.
+const icons = {
+  undo: raw(`<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg>`),
+  redo: raw(`<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 14l5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/></svg>`),
+  kebab: raw(`<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="12" cy="19" r="1.7"/></svg>`),
+  back: raw(`<svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>`),
+  stopwatch: raw(`<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="14" r="7"/><polyline points="12 11 12 14 14.5 14"/><line x1="10" y1="3" x2="14" y2="3"/><line x1="12" y1="3" x2="12" y2="5"/></svg>`),
+  // Compact bar-chart glyph — ascending columns, used to enter the dashboard.
+  chart: raw(`<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="3" y1="20" x2="21" y2="20"/><rect x="5" y="13" width="3" height="6" rx="0.5"/><rect x="10.5" y="9" width="3" height="10" rx="0.5"/><rect x="16" y="5" width="3" height="14" rx="0.5"/></svg>`),
+  edit: raw(`<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4l6 6"/><path d="M3 21l4-1 11.5-11.5-3-3L4 17l-1 4z"/></svg>`),
+  trash: raw(`<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>`),
+  dumbbell: raw(`<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 8v8M8 6v12M16 6v12M19 8v8M8 12h8"/></svg>`),
+  clock: raw(`<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="13" r="7"/><path d="M12 10.5V13l1.8 1.2"/><path d="M9.5 3.5h5"/></svg>`),
+  search: raw(`<svg class="search-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg>`),
+  clear: raw(`<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>`),
+};
+
+// Shared search field: leading magnifier + input + a trailing clear button that
+// only appears once there's a query. `id` doubles as the clear button's target.
+const searchField = (id, value, { test = '' } = {}) => html`
+  <div class="catalog-filter-wrap ${value ? 'has-text' : ''}">
+    <input type="text" id="${id}" ${test} class="catalog-filter"
+           placeholder="Buscar ejercicio…" autocomplete="off" value="${value}" />
+    ${icons.search}
+    ${value ? html`<button type="button" class="search-clear" data-action="clear-search" data-target="${id}" aria-label="Borrar búsqueda">${icons.clear}</button>` : ''}
+  </div>`;
+
+// Empty result for a search: a friendly dead-end that offers to create the
+// thing the user was looking for, name pre-seeded from the query.
+const emptySearch = (query, routineId = null) => html`
+  <div class="search-empty">
+    <span class="search-empty-ic" aria-hidden="true">${icons.search}</span>
+    <p class="search-empty-msg">Nada coincide con <strong>“${query}”</strong></p>
+    <button class="ghost search-empty-cta" data-action="add-catalog-exercise"
+            ${routineId ? html`data-routine="${routineId}"` : ''} data-prefill="${query}">
+      Crear “${query}”
+    </button>
+  </div>`;
 const backBtn = (href, label = 'Volver al inicio') =>
-  `<button class="back-btn" data-go="${esc(href)}" aria-label="${esc(label)}">${iconBack}</button>`;
+  html`<button class="back-btn" data-go="${href}" aria-label="${label}">${icons.back}</button>`;
 
 // Fixed bottom action bar rendered on every view. Left: undo/redo.
 // Right: contextual primary action (Editar on home, Listo on edit) + kebab.
-const bottomBar = (state, primary = '') => `
+const bottomBar = (state, primary = '') => html`
   <nav class="bottom-bar">
     <div class="bottom-bar-inner">
       <div class="group">
-        <button class="tool-btn" data-undo aria-label="Deshacer" ${state._undo ? '' : 'disabled'}>${iconUndo}</button>
-        <button class="tool-btn" data-redo aria-label="Rehacer" ${state._redo ? '' : 'disabled'}>${iconRedo}</button>
+        <button class="tool-btn" data-action="undo" aria-label="Deshacer" ${state._undo ? '' : 'disabled'}>${icons.undo}</button>
+        <button class="tool-btn" data-action="redo" aria-label="Rehacer" ${state._redo ? '' : 'disabled'}>${icons.redo}</button>
       </div>
       <div class="group">
         ${primary}
-        <button class="tool-btn" data-menu aria-label="Más opciones">${iconKebab}</button>
+        <button class="tool-btn" data-action="menu" aria-label="Más opciones">${icons.kebab}</button>
       </div>
     </div>
   </nav>
 `;
 
-const doneBtn = '<button class="icon-btn primary" data-done>Listo</button>';
-const editBtn = '<button class="icon-btn primary" data-go="#/edit">Editar</button>';
+const doneBtn = raw('<button class="icon-btn primary" data-action="done">Listo</button>');
+const editBtn = raw('<button class="icon-btn primary" data-go="#/edit">Editar</button>');
 
 // Square brand badge — amber barbell on charcoal
-const logoSvg = `
+const logoSvg = raw(`
 <svg class="app-logo" viewBox="0 0 40 40" aria-hidden="true">
   <rect width="40" height="40" rx="6" fill="transparent"/>
   <g fill="#ffffff">
@@ -734,7 +781,7 @@ const logoSvg = `
     <rect x="29" y="13" width="3" height="14" rx="0.5"/>
     <rect x="33" y="17" width="3" height="6" rx="0.5"/>
   </g>
-</svg>`;
+</svg>`);
 
 const DAY_WORDS = ['Uno', 'Dos', 'Tres', 'Cuatro', 'Cinco', 'Seis', 'Siete', 'Ocho', 'Nueve', 'Diez', 'Once', 'Doce'];
 const dayWord = (i) => DAY_WORDS[i] ?? String(i + 1);
@@ -808,33 +855,33 @@ const renderHome = (state) => {
     const pct = total > 0 ? Math.round((done / total) * 100) : 0;
     const active = r.id === activeId && done > 0;
     const meta = isRest
-      ? `<span class="num small muted">Día de descanso</span>`
-      : `
+      ? html`<span class="num small muted">Día de descanso</span>`
+      : html`
         <div class="progress-bar" aria-hidden="true"><div style="width:${pct}%"></div></div>
         <span class="progress-num">${String(done).padStart(2, '0')} / ${String(total).padStart(2, '0')}</span>
       `;
-    return `
-      <button class="routine-card ${isRest ? 'rest' : ''} ${active ? 'active' : ''}" data-test-id="routine-card" data-go="#/workout/${esc(r.id)}">
+    return html`
+      <button class="routine-card ${isRest ? 'rest' : ''} ${active ? 'active' : ''}" ${dataTest('routine-card')} data-go="#/workout/${r.id}">
         <div class="rc-row1">
           <span class="rc-badge">${dayNum(i)}</span>
           <div class="rc-title">
-            <span class="rc-eyebrow">Día ${esc(dayWord(i))}</span>
-            ${esc(r.name)}
+            <span class="rc-eyebrow">Día ${dayWord(i)}</span>
+            ${r.name}
           </div>
           <span class="rc-chev" aria-hidden="true">›</span>
         </div>
         <div class="rc-row2">${meta}</div>
       </button>`;
-  }).join('');
+  });
 
-  return `
+  return html`
     <header class="app-bar">
       <div class="app-bar-left">
         ${logoSvg}
         <h1 class="app-title" data-tap-title>Arnold</h1>
       </div>
       <div class="app-bar-actions">
-        <button class="tool-btn" data-go="#/dashboard" aria-label="Progreso">${iconChart}</button>
+        <button class="tool-btn" data-go="#/dashboard" aria-label="Progreso">${icons.chart}</button>
       </div>
     </header>
     <div class="section">
@@ -903,13 +950,15 @@ const describeCommand = (cmd, state) => {
   }
 };
 
-const renderNewRoutineSheet = () => `
-  <div class="drawer-backdrop" data-cancel-new-routine></div>
+const renderNewRoutineSheet = () => html`
+  <div class="drawer-backdrop" data-action="cancel-new-routine"></div>
   <aside class="drawer" role="dialog" aria-modal="true" aria-label="Nueva rutina">
-    <div class="drawer-handle" aria-hidden="true"></div>
-    <div class="drawer-header">
-      <h3>Nueva rutina</h3>
-      <button class="icon-btn" data-cancel-new-routine aria-label="Cerrar">✕</button>
+    <div class="drawer-head">
+      <div class="drawer-handle" aria-hidden="true"></div>
+      <div class="drawer-header">
+        <h3>Nueva rutina</h3>
+        <button class="icon-btn" data-action="cancel-new-routine" aria-label="Cerrar">✕</button>
+      </div>
     </div>
     <form class="drawer-body" id="new-routine-form" autocomplete="off">
       <div class="field">
@@ -929,24 +978,27 @@ const renderNewRoutineSheet = () => `
 // the definition — name, type, image/video, notes. Sets/reps/duration/weight
 // are configured on the routine instance. Two submit buttons: save & back to
 // the manager, or save & keep adding.
-const renderCatalogFormSheet = () => `
-  <div class="drawer-backdrop" data-cancel-catalog-form></div>
+const renderCatalogFormSheet = () => html`
+  <div class="drawer-backdrop" data-action="cancel-catalog-form"></div>
   <aside class="drawer" role="dialog" aria-modal="true" aria-label="Crear ejercicio">
-    <div class="drawer-handle" aria-hidden="true"></div>
-    <div class="drawer-header">
-      <h3>Crear ejercicio</h3>
-      <button class="icon-btn" data-cancel-catalog-form aria-label="Cerrar">✕</button>
+    <div class="drawer-head">
+      <div class="drawer-handle" aria-hidden="true"></div>
+      <div class="drawer-header">
+        <h3>Crear ejercicio</h3>
+        <button class="icon-btn" data-action="cancel-catalog-form" aria-label="Cerrar">✕</button>
+      </div>
     </div>
-    <form class="drawer-body" id="catalog-form" data-test-id="catalog-form" autocomplete="off">
+    <form class="drawer-body" id="catalog-form" ${dataTest('catalog-form')} autocomplete="off">
       <div class="field">
         <label for="cat-form-name">Nombre</label>
         <input type="text" id="cat-form-name" name="name" maxlength="80"
-               placeholder="Press de banca con barra" autocomplete="off" />
+               placeholder="Press de banca con barra" autocomplete="off"
+               value="${ui.catalogFormPrefill}" />
       </div>
       <div class="field">
         <label for="cat-form-category">Grupo muscular</label>
         <select id="cat-form-category" name="category">
-          ${CATEGORY_ORDER.map((k) => `<option value="${k}">${esc(CATEGORIES[k].label)}</option>`).join('')}
+          ${CATEGORY_ORDER.map((k) => html`<option value="${k}">${CATEGORIES[k].label}</option>`)}
         </select>
       </div>
       <div class="field">
@@ -973,13 +1025,15 @@ const renderCatalogFormSheet = () => `
   </aside>
 `;
 
-const renderMenuSheet = () => `
-  <div class="drawer-backdrop" data-close-menu></div>
+const renderMenuSheet = () => html`
+  <div class="drawer-backdrop" data-action="close-menu"></div>
   <aside class="drawer drawer-menu" role="dialog" aria-modal="true" aria-label="Más opciones">
-    <div class="drawer-handle" aria-hidden="true"></div>
-    <div class="drawer-header">
-      <h3>Más opciones${cacheVersion ? ` <span class="menu-cache-version">${esc(cacheVersion)}</span>` : ''}</h3>
-      <button class="icon-btn" data-close-menu aria-label="Cerrar">✕</button>
+    <div class="drawer-head">
+      <div class="drawer-handle" aria-hidden="true"></div>
+      <div class="drawer-header">
+        <h3>Más opciones${ui.cacheVersion ? html` <span class="menu-cache-version">${ui.cacheVersion}</span>` : ''}</h3>
+        <button class="icon-btn" data-action="close-menu" aria-label="Cerrar">✕</button>
+      </div>
     </div>
     <ul class="menu-list">
       <li>
@@ -994,7 +1048,7 @@ const renderMenuSheet = () => `
         </button>
       </li>
       <li>
-        <button class="menu-item" data-export>
+        <button class="menu-item" data-action="export">
           <span class="menu-icon" aria-hidden="true">
             <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
           </span>
@@ -1005,7 +1059,7 @@ const renderMenuSheet = () => `
         </button>
       </li>
       <li>
-        <button class="menu-item" data-import>
+        <button class="menu-item" data-action="import">
           <span class="menu-icon" aria-hidden="true">
             <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
           </span>
@@ -1038,7 +1092,7 @@ const renderMenuSheet = () => `
         </button>
       </li>
       <li>
-        <button class="menu-item" data-reset>
+        <button class="menu-item" data-action="reset">
           <span class="menu-icon" aria-hidden="true">
             <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
           </span>
@@ -1056,21 +1110,19 @@ const renderStopwatchSheet = () => {
   const display = stopwatchOpen
     ? fmtStopwatch(performance.now() - stopwatchStart)
     : '00:00';
-  return `
-    <div class="drawer-backdrop stopwatch-overlay" data-close-stopwatch role="dialog" aria-modal="true" aria-label="Cronómetro">
+  return html`
+    <div class="drawer-backdrop stopwatch-overlay" data-action="close-stopwatch" role="dialog" aria-modal="true" aria-label="Cronómetro">
       <div class="stopwatch-display" id="stopwatch-display">${display}</div>
-      <button class="stopwatch-close" data-close-stopwatch aria-label="Cerrar">✕</button>
+      <button class="stopwatch-close" data-action="close-stopwatch" aria-label="Cerrar">✕</button>
     </div>
   `;
 };
 
 const renderMotivation = () => {
   const quote = pickQuote();
-  const words = quote.split(/(\s+)/).map((tok, i) => {
-    if (/^\s+$/.test(tok)) return tok;
-    return `<span class="word" style="animation-delay:${50 + i * 35}ms">${esc(tok)}</span>`;
-  }).join('');
-  return `
+  const words = quote.split(/(\s+)/).map((tok, i) =>
+    /^\s+$/.test(tok) ? tok : html`<span class="word" style="animation-delay:${50 + i * 35}ms">${tok}</span>`);
+  return html`
     <div class="motivation" data-go="#/" role="dialog" aria-label="Frase motivacional">
       <p class="quote">${words}</p>
       <span class="motivation-hint">tocá para volver</span>
@@ -1080,13 +1132,13 @@ const renderMotivation = () => {
 
 const renderLog = (state) => {
   const past = [...store.history.past].reverse();
-  const items = past.map((cmd) => `
+  const items = past.map((cmd) => html`
     <li class="log-item">
-      <span class="log-desc">${esc(describeCommand(cmd, state))}</span>
-      <span class="log-time">${esc(fmtRelTime(cmd.t))}</span>
+      <span class="log-desc">${describeCommand(cmd, state)}</span>
+      <span class="log-time">${fmtRelTime(cmd.t)}</span>
     </li>
-  `).join('');
-  return `
+  `);
+  return html`
     <header class="workout-bar">
       ${backBtn('#/')}
       <div class="title-block">
@@ -1096,8 +1148,8 @@ const renderLog = (state) => {
       <span></span>
     </header>
     ${past.length === 0
-      ? '<p class="muted small" style="padding:1rem 0.25rem">Sin acciones todavía.</p>'
-      : `<ul class="log">${items}</ul>`}
+      ? html`<p class="muted small" style="padding:1rem 0.25rem">Sin acciones todavía.</p>`
+      : html`<ul class="log">${items}</ul>`}
     ${bottomBar(state)}
   `;
 };
@@ -1110,11 +1162,11 @@ const renderWorkout = (state, routineId, editExerciseId, editMode = false) => {
   const isRestDay = /(descanso|rest)/i.test(routine.name);
   const items = routine.exercises.length === 0
     ? (isRestDay
-        ? `<div class="rest-card">Día de descanso. Recupera, hidrata, volvé más fuerte.</div>`
-        : `<div class="empty-state">
+        ? html`<div class="rest-card">Día de descanso. Recupera, hidrata, volvé más fuerte.</div>`
+        : html`<div class="empty-state">
              <div class="empty-icon" aria-hidden="true">＋</div>
              <p>Esta rutina está vacía.</p>
-             <button class="primary" data-add-exercise data-routine="${esc(routine.id)}" data-open-drawer="1">Agregar primer ejercicio</button>
+             <button class="primary" data-action="add-exercise" data-routine="${routine.id}" data-open-drawer="1">Agregar primer ejercicio</button>
            </div>`)
     : routine.exercises.map((inst, exIndex) => {
         const ex = hydrateExercise(state, inst);
@@ -1130,17 +1182,17 @@ const renderWorkout = (state, routineId, editExerciseId, editMode = false) => {
           const done = !!arr[i];
           let target;
           if (kind === 'time') {
-            target = s.duration ? esc(s.duration) : '—';
+            target = s.duration || '—';
           } else {
             const w = numOrNull(s.weight), r = numOrNull(s.reps);
-            const wPart = w != null ? `${w} <span class="u">${esc(unit)}</span>` : '—';
-            const rPart = r != null ? `${r}` : '—';
-            target = (w != null || r != null) ? `${wPart} <span class="x">×</span> ${rPart}` : '—';
+            const wPart = w != null ? html`${w} <span class="u">${unit}</span>` : '—';
+            const rPart = r != null ? r : '—';
+            target = (w != null || r != null) ? html`${wPart} <span class="x">×</span> ${rPart}` : '—';
           }
-          return `<button class="set-line ${done ? 'done' : ''}"
-                          data-test-id="set-toggle"
-                          data-toggle-set
-                          data-exercise="${esc(ex.id)}"
+          return html`<button class="set-line ${done ? 'done' : ''}"
+                          ${dataTest('set-toggle')}
+                          data-action="toggle-set"
+                          data-exercise="${ex.id}"
                           data-index="${i}"
                           data-from="${done ? '1' : '0'}"
                           aria-pressed="${done}"
@@ -1149,33 +1201,32 @@ const renderWorkout = (state, routineId, editExerciseId, editMode = false) => {
                     <span class="set-line-label">Serie ${i + 1}</span>
                     <span class="set-line-target">${target}</span>
                   </button>`;
-        }).join('');
+        });
 
         // reps → weight list + total volume; time → duration.
         const wLabel = fmtSeriesWeights(series, unit);
         const vol = seriesVolume(series);
         const statChips = kind === 'time'
-          ? `<span class="stat-chip"><span class="k">Duración</span> ${esc(seriesDuration(series) || '—')}</span>`
-          : `${wLabel ? `<span class="stat-chip weight"><span class="k">Peso</span> ${esc(wLabel)}</span>` : ''}${vol ? `<span class="stat-chip"><span class="k">Volumen</span> ${esc(vol)}</span>` : ''}`;
+          ? html`<span class="stat-chip"><span class="k">Duración</span> ${seriesDuration(series) || '—'}</span>`
+          : html`${wLabel ? html`<span class="stat-chip weight"><span class="k">Peso</span> ${wLabel}</span>` : ''}${vol ? html`<span class="stat-chip"><span class="k">Volumen</span> ${vol}</span>` : ''}`;
 
-        const url = safeUrl(ex.video);
-        const media = parseMedia(url);
+        const media = parseMedia(safeUrl(ex.video));
         let video = '';
         if (media) {
           if (media.kind === 'link') {
-            video = `<a class="video-link" href="${esc(media.url)}" target="_blank" rel="noopener noreferrer">Abrir enlace</a>`;
+            video = html`<a class="video-link" href="${media.url}" target="_blank" rel="noopener noreferrer">Abrir enlace</a>`;
           } else {
-            const open = expandedMedia.has(ex.id);
+            const open = ui.expandedMedia.has(ex.id);
             const title = media.kind === 'image'
               ? (open ? 'Imagen' : 'Ver imagen')
               : (open ? 'Video' : 'Ver video');
             // Embed only mounts when open — no iframe / <img> network hit
             // until the user opens the panel.
-            const body = open ? `<div class="media-content">${renderMedia(media)}</div>` : '';
-            video = `
+            const body = open ? html`<div class="media-content">${renderMedia(media)}</div>` : '';
+            video = html`
               <div class="media-panel${open ? ' open' : ''}">
                 <button class="media-toggle"
-                        data-toggle-media data-exercise="${esc(ex.id)}"
+                        data-action="toggle-media" data-exercise="${ex.id}"
                         aria-expanded="${open}">
                   <span class="media-toggle-title">${title}</span>
                   <span class="media-toggle-chev">
@@ -1188,24 +1239,24 @@ const renderWorkout = (state, routineId, editExerciseId, editMode = false) => {
           }
         }
 
-        const notes = ex.notes ? `<p class="ex-notes">${esc(ex.notes)}</p>` : '';
+        const notes = ex.notes ? html`<p class="ex-notes">${ex.notes}</p>` : '';
         const complete = doneCount === setCount && setCount > 0;
 
-        const editActions = editMode ? `
+        const editActions = editMode ? html`
           <div class="ex-edit-actions">
             <button class="ex-edit"
-                    data-edit-exercise
-                    data-routine="${esc(routine.id)}"
-                    data-exercise="${esc(ex.id)}"
+                    data-action="edit-exercise"
+                    data-routine="${routine.id}"
+                    data-exercise="${ex.id}"
                     aria-label="Editar ejercicio">✎</button>
             <button class="ex-edit danger-edit"
-                    data-remove-exercise
-                    data-routine="${esc(routine.id)}"
-                    data-exercise="${esc(ex.id)}"
+                    data-action="remove-exercise"
+                    data-routine="${routine.id}"
+                    data-exercise="${ex.id}"
                     aria-label="Eliminar ejercicio">✕</button>
           </div>
         ` : '';
-        const dragHandle = editMode ? `
+        const dragHandle = editMode ? html`
           <button class="ex-drag-handle" data-drag-handle aria-label="Arrastrar para reordenar">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true">
               <circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/>
@@ -1214,11 +1265,11 @@ const renderWorkout = (state, routineId, editExerciseId, editMode = false) => {
             </svg>
           </button>
         ` : '';
-        return `
-          <article class="exercise ${complete ? 'complete' : ''}" data-test-id="exercise-card"${editMode ? ` data-reorder-index="${exIndex}"` : ''}>
+        return html`
+          <article class="exercise ${complete ? 'complete' : ''}" ${dataTest('exercise-card')}${editMode ? html` data-reorder-index="${exIndex}"` : ''}>
             <div class="ex-head">
               ${dragHandle}
-              <h3>${esc(ex.name)}</h3>
+              <h3>${ex.name}</h3>
               ${editActions}
             </div>
             ${notes}
@@ -1230,7 +1281,7 @@ const renderWorkout = (state, routineId, editExerciseId, editMode = false) => {
             ${video}
           </article>
         `;
-      }).join('');
+      });
 
   const { total, done } = countDoneFor(state, date, routine);
 
@@ -1242,36 +1293,36 @@ const renderWorkout = (state, routineId, editExerciseId, editMode = false) => {
   const num = idx >= 0 ? idx : 0;
   const pct = total > 0 ? Math.round((done / total) * 100) : 0;
 
-  return `
+  return html`
     <header class="workout-bar">
       ${backBtn('#/')}
       <div class="title-block">
-        <div class="title">${esc(routine.name)}</div>
+        <div class="title">${routine.name}</div>
         <div class="sub">Día ${dayNum(num)} · ${String(done).padStart(2, '0')} / ${String(total).padStart(2, '0')} series</div>
       </div>
       <span></span>
     </header>
     <div class="workout-progress" aria-hidden="true"><div style="width:${pct}%"></div></div>
     ${editMode && routine.exercises.length > 0
-      ? `<div class="exercise-list" data-reorder-list data-reorder-kind="exercise" data-reorder-routine="${esc(routine.id)}">${items}</div>`
+      ? html`<div class="exercise-list" data-reorder-list data-reorder-kind="exercise" data-reorder-routine="${routine.id}">${items}</div>`
       : items}
-    ${editMode && routine.exercises.length > 0 ? `
+    ${editMode && routine.exercises.length > 0 ? html`
       <div class="fab-row">
-        <button class="fab" data-add-exercise data-routine="${esc(routine.id)}" aria-label="Agregar ejercicio">
+        <button class="fab" data-action="add-exercise" data-routine="${routine.id}" aria-label="Agregar ejercicio">
           <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         </button>
       </div>
     ` : ''}
-    ${!editMode && routine.exercises.length > 0 ? `
+    ${!editMode && routine.exercises.length > 0 ? html`
       <div class="bottom-action">
-        <button class="ghost" data-clear-sets data-date="${esc(date)}">Volver a empezar</button>
+        <button class="ghost" data-action="clear-sets" data-date="${date}">Volver a empezar</button>
       </div>
     ` : ''}
     ${drawer}
     ${bottomBar(state, routine.exercises.length > 0
       ? (editMode
-          ? '<button class="icon-btn primary" data-done>Listo</button>'
-          : `<button class="tool-btn" data-stopwatch aria-label="Cronómetro">${iconStopwatch}</button><button class="icon-btn primary" data-go="#/workout/${esc(routine.id)}/edit">Editar</button>`)
+          ? doneBtn
+          : html`<button class="tool-btn" data-action="stopwatch" aria-label="Cronómetro">${icons.stopwatch}</button><button class="icon-btn primary" data-go="#/workout/${routine.id}/edit">Editar</button>`)
       : '')}
   `;
 };
@@ -1279,11 +1330,10 @@ const renderWorkout = (state, routineId, editExerciseId, editMode = false) => {
 const renderMedia = (media) => {
   if (media.kind === 'youtube') {
     const cls = media.short ? 'media-wrap short' : 'media-wrap';
-    const src = `https://www.youtube.com/embed/${esc(media.id)}`;
-    return `<div class="${cls}"><iframe src="${src}" title="YouTube" allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen loading="lazy"></iframe></div>`;
+    return html`<div class="${cls}"><iframe src="https://www.youtube.com/embed/${media.id}" title="YouTube" allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen loading="lazy"></iframe></div>`;
   }
   if (media.kind === 'image') {
-    return `<div class="media-wrap"><img src="${esc(media.url)}" alt="" loading="lazy" /></div>`;
+    return html`<div class="media-wrap"><img src="${media.url}" alt="" loading="lazy" /></div>`;
   }
   return '';
 };
@@ -1293,99 +1343,92 @@ const renderDrawer = (routine, ex) => {
   const kind = exKind(ex);
   const series = exSeries(ex);
   const unit = exUnit(ex);
-  return `
-    <div class="drawer-backdrop" data-close-drawer></div>
-    <aside class="drawer" data-test-id="editor-drawer" role="dialog" aria-modal="true" aria-label="Editar ejercicio">
-      <div class="drawer-handle" aria-hidden="true"></div>
-      <div class="drawer-header">
-        <h3>Editar ejercicio</h3>
-        <button class="icon-btn" data-close-drawer aria-label="Cerrar">✕</button>
+  const re = `data-routine="${routine.id}" data-exercise="${ex.id}"`;
+  return html`
+    <div class="drawer-backdrop" data-action="close-drawer"></div>
+    <aside class="drawer" ${dataTest('editor-drawer')} role="dialog" aria-modal="true" aria-label="Editar ejercicio">
+      <div class="drawer-head">
+        <div class="drawer-handle" aria-hidden="true"></div>
+        <div class="drawer-header">
+          <h3>Editar ejercicio</h3>
+          <button class="icon-btn" data-action="close-drawer" aria-label="Cerrar">✕</button>
+        </div>
       </div>
       <div class="drawer-body">
         <div class="field">
           <label>Nombre</label>
-          <input type="text" data-update name="name" value="${esc(ex.name)}"
-                 data-routine="${esc(routine.id)}" data-exercise="${esc(ex.id)}" />
+          <input type="text" data-update name="name" value="${ex.name}" ${raw(re)} />
         </div>
         <div class="field-2col">
           <div class="field">
             <label>Tipo</label>
-            <select data-update name="kind"
-                    data-routine="${esc(routine.id)}" data-exercise="${esc(ex.id)}">
+            <select data-update name="kind" ${raw(re)}>
               <option value="reps" ${exKind(ex) === 'reps' ? 'selected' : ''}>Repeticiones</option>
               <option value="time" ${exKind(ex) === 'time' ? 'selected' : ''}>Tiempo (cardio)</option>
             </select>
           </div>
           <div class="field">
             <label>Grupo muscular</label>
-            ${categorySelect(ex.category, `data-update data-routine="${esc(routine.id)}" data-exercise="${esc(ex.id)}"`)}
+            ${categorySelect(ex.category, `data-update ${re}`)}
           </div>
         </div>
         <div class="field">
           <label>Series</label>
           <div class="series-stepper" role="group" aria-label="Cantidad de series">
-            <button type="button" class="step-btn" data-series-step="-1"
-                    data-routine="${esc(routine.id)}" data-exercise="${esc(ex.id)}"
-                    aria-label="Quitar una serie" ${series.length <= 1 ? 'disabled' : ''}>−</button>
+            <button type="button" class="step-btn" data-action="series-step" data-series-step="-1"
+                    ${raw(re)} aria-label="Quitar una serie" ${series.length <= 1 ? 'disabled' : ''}>−</button>
             <span class="step-count" aria-live="polite">${series.length}</span>
-            <button type="button" class="step-btn" data-series-step="1"
-                    data-routine="${esc(routine.id)}" data-exercise="${esc(ex.id)}"
-                    aria-label="Agregar una serie" ${series.length >= 20 ? 'disabled' : ''}>+</button>
+            <button type="button" class="step-btn" data-action="series-step" data-series-step="1"
+                    ${raw(re)} aria-label="Agregar una serie" ${series.length >= 20 ? 'disabled' : ''}>+</button>
           </div>
         </div>
-        ${kind === 'time' ? `
+        ${kind === 'time' ? html`
         <div class="field">
           <label>Duración</label>
-          <input type="text" data-update name="duration" value="${esc(seriesDuration(series))}"
-                 data-routine="${esc(routine.id)}" data-exercise="${esc(ex.id)}"
+          <input type="text" data-update name="duration" value="${seriesDuration(series)}" ${raw(re)}
                  placeholder="30-60 seg" />
         </div>
-        ` : `
+        ` : html`
         <div class="field">
           <div class="series-weights-head">
             <label>Peso × reps por serie</label>
-            <select class="unit-select" data-update name="unit"
-                    data-routine="${esc(routine.id)}" data-exercise="${esc(ex.id)}">
+            <select class="unit-select" data-update name="unit" ${raw(re)}>
               <option value="kg" ${unit === 'kg' ? 'selected' : ''}>kg</option>
               <option value="lb" ${unit === 'lb' ? 'selected' : ''}>lb</option>
             </select>
           </div>
           <div class="series-grid">
-            ${series.map((s, i) => `
+            ${series.map((s, i) => html`
               <div class="series-row">
                 <span class="series-row-num">${i + 1}</span>
                 <div class="series-input-wrap">
                   <input type="number" inputmode="decimal" step="0.5" class="series-weight-input"
-                         data-update name="series-weight" data-set-index="${i}"
-                         data-routine="${esc(routine.id)}" data-exercise="${esc(ex.id)}"
-                         value="${esc(s.weight ?? '')}" placeholder="—" aria-label="Peso serie ${i + 1}" />
-                  <span class="series-input-unit">${esc(unit)}</span>
+                         data-update name="series-weight" data-set-index="${i}" ${raw(re)}
+                         value="${s.weight ?? ''}" placeholder="—" aria-label="Peso serie ${i + 1}" />
+                  <span class="series-input-unit">${unit}</span>
                 </div>
                 <span class="series-row-x" aria-hidden="true">×</span>
                 <div class="series-input-wrap">
                   <input type="number" inputmode="numeric" step="1" min="0" class="series-reps-input"
-                         data-update name="series-reps" data-set-index="${i}"
-                         data-routine="${esc(routine.id)}" data-exercise="${esc(ex.id)}"
-                         value="${esc(s.reps ?? '')}" placeholder="—" aria-label="Reps serie ${i + 1}" />
+                         data-update name="series-reps" data-set-index="${i}" ${raw(re)}
+                         value="${s.reps ?? ''}" placeholder="—" aria-label="Reps serie ${i + 1}" />
                   <span class="series-input-unit">reps</span>
                 </div>
-              </div>`).join('')}
+              </div>`)}
           </div>
         </div>
         `}
         <div class="field">
           <label>Imagen o video (URL)</label>
-          <input type="text" data-update name="video" value="${esc(ex.video ?? '')}"
-                 data-routine="${esc(routine.id)}" data-exercise="${esc(ex.id)}"
+          <input type="text" data-update name="video" value="${ex.video ?? ''}" ${raw(re)}
                  placeholder="https://youtu.be/... o https://.../foto.jpg" />
         </div>
         <div class="field">
           <label>Notas</label>
-          <input type="text" data-update name="notes" value="${esc(ex.notes ?? '')}"
-                 data-routine="${esc(routine.id)}" data-exercise="${esc(ex.id)}" />
+          <input type="text" data-update name="notes" value="${ex.notes ?? ''}" ${raw(re)} />
         </div>
         <div class="bottom-action">
-          <button class="primary" data-close-drawer>Listo</button>
+          <button class="primary" data-action="close-drawer">Listo</button>
         </div>
       </div>
     </aside>
@@ -1425,13 +1468,13 @@ const renderHeatmap = (state) => {
         lvl = ratio > 0.75 ? 4 : ratio > 0.5 ? 3 : ratio > 0.25 ? 2 : 1;
       }
       const future = d > today;
-      cells.push(`<div class="heatmap-cell lvl-${lvl}${future ? ' future' : ''}"
-        data-date="${esc(key)}" title="${esc(key)} · ${n} series"></div>`);
+      cells.push(html`<div class="heatmap-cell lvl-${lvl}${future ? ' future' : ''}"
+        data-date="${key}" title="${key} · ${n} series"></div>`);
     }
   }
 
-  return `
-    <div class="heatmap" style="grid-template-columns:repeat(${HEATMAP_WEEKS},1fr)">${cells.join('')}</div>
+  return html`
+    <div class="heatmap" style="grid-template-columns:repeat(${HEATMAP_WEEKS},1fr)">${cells}</div>
     <div class="heatmap-legend">
       <span>menos</span>
       <div class="heatmap-cell lvl-0"></div>
@@ -1450,7 +1493,7 @@ const renderSparkline = (history) => {
     .map((row) => rowChartValue(row))
     .filter((n) => Number.isFinite(n));
   if (points.length === 0) {
-    return `<svg class="spark" viewBox="0 0 80 22" aria-hidden="true"><line x1="0" y1="11" x2="80" y2="11" stroke="currentColor" stroke-opacity="0.18" stroke-width="1.5" stroke-dasharray="3 3"/></svg>`;
+    return html`<svg class="spark" viewBox="0 0 80 22" aria-hidden="true"><line x1="0" y1="11" x2="80" y2="11" stroke="currentColor" stroke-opacity="0.18" stroke-width="1.5" stroke-dasharray="3 3"/></svg>`;
   }
   const max = Math.max(...points);
   const min = Math.min(...points);
@@ -1464,7 +1507,7 @@ const renderSparkline = (history) => {
   }).join(' ');
   const lastX = last.length > 1 ? (80).toFixed(1) : '40';
   const lastY = (20 - ((last[last.length - 1] - min) / range) * 18).toFixed(1);
-  return `
+  return html`
     <svg class="spark" viewBox="0 0 80 22" aria-hidden="true">
       <polyline points="${coords}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
       <circle cx="${lastX}" cy="${lastY}" r="2" fill="currentColor"/>
@@ -1478,33 +1521,32 @@ const renderDashboard = (state) => {
   const catalog = buildCatalog(state).filter((c) => c.lastDate);
   const cards = catalog.slice(0, 24).map((c) => {
     const history = buildExerciseHistory(state, c.name);
-    const weightLabel = fmtWeight(c.lastWeight) ?? '—';
-    return `
-      <button class="latest-card" data-go="#/dashboard/ex/${esc(slugify(c.displayName))}">
+    return html`
+      <button class="latest-card" data-go="#/dashboard/ex/${slugify(c.displayName)}">
         <div class="latest-badge">
-          <span class="latest-badge-value">${esc(c.lastWeight?.value ?? '—')}</span>
-          <span class="latest-badge-unit">${esc(c.lastWeight?.unit ?? '')}</span>
+          <span class="latest-badge-value">${c.lastWeight?.value ?? '—'}</span>
+          <span class="latest-badge-unit">${c.lastWeight?.unit ?? ''}</span>
         </div>
         <div class="latest-body">
-          <div class="latest-name">${esc(c.displayName)}</div>
+          <div class="latest-name">${c.displayName}</div>
           <div class="latest-meta">
-            <span>${esc(fmtRelDay(c.lastDate))}</span>
+            <span>${fmtRelDay(c.lastDate)}</span>
             <span class="dot" aria-hidden="true">·</span>
             <span>${c.sessionCount} ${c.sessionCount === 1 ? 'sesión' : 'sesiones'}</span>
           </div>
         </div>
         <div class="latest-spark">${renderSparkline(history)}</div>
       </button>`;
-  }).join('');
+  });
 
   const empty = catalog.length === 0
-    ? `<div class="empty-state">
+    ? html`<div class="empty-state">
          <div class="empty-icon" aria-hidden="true">▦</div>
          <p>Todavía no marcaste ninguna serie. Cuando registres tu primer entrenamiento vas a ver tu progreso acá.</p>
        </div>`
     : '';
 
-  return `
+  return html`
     <header class="workout-bar">
       ${backBtn('#/')}
       <div class="title-block">
@@ -1576,7 +1618,7 @@ const renderBarChart = (rows, kind) => {
   const baseY = padTop + innerH;
   const slotW = innerW / WINDOW;
 
-  let bars = '';
+  const bars = [];
   dayKeys.forEach((key, di) => {
     const vals = byDay.get(key);
     if (!vals || vals.length === 0) return;
@@ -1588,21 +1630,21 @@ const renderBarChart = (rows, kind) => {
       const barH = (v / max) * innerH;
       const x = groupX + j * barW;
       const rectW = Math.max(1, barW - (vals.length > 1 ? 1 : 0));
-      bars += `<rect class="detail-bar" x="${x.toFixed(1)}" y="${(baseY - barH).toFixed(1)}" width="${rectW.toFixed(1)}" height="${Math.max(0, barH).toFixed(1)}" rx="1"><title>${esc(fmtShortDate(key))}: ${esc(v)}${unit ? ` ${esc(unit)}` : ''}</title></rect>`;
+      bars.push(html`<rect class="detail-bar" x="${x.toFixed(1)}" y="${(baseY - barH).toFixed(1)}" width="${rectW.toFixed(1)}" height="${Math.max(0, barH).toFixed(1)}" rx="1"><title>${fmtShortDate(key)}: ${v}${unit ? ` ${unit}` : ''}</title></rect>`);
     });
   });
 
   const fmtMax = Number.isInteger(max) ? max : Number(max.toFixed(1));
 
-  return `
+  return html`
     <svg class="detail-chart" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true">
       <line x1="${padLeft}" y1="${baseY.toFixed(1)}" x2="${(padLeft + innerW).toFixed(1)}" y2="${baseY.toFixed(1)}" class="axis"/>
-      <text x="${padLeft - 6}" y="${padTop + 4}" class="axis-label" text-anchor="end">${esc(fmtMax)}</text>
+      <text x="${padLeft - 6}" y="${padTop + 4}" class="axis-label" text-anchor="end">${fmtMax}</text>
       <text x="${padLeft - 6}" y="${baseY.toFixed(1)}" class="axis-label" text-anchor="end">0</text>
-      <text x="${padLeft}" y="${h - 8}" class="axis-label" text-anchor="start">${esc(fmtShortDate(firstKey))}</text>
-      <text x="${(padLeft + innerW).toFixed(1)}" y="${h - 8}" class="axis-label" text-anchor="end">${esc(fmtShortDate(lastKey))}</text>
+      <text x="${padLeft}" y="${h - 8}" class="axis-label" text-anchor="start">${fmtShortDate(firstKey)}</text>
+      <text x="${(padLeft + innerW).toFixed(1)}" y="${h - 8}" class="axis-label" text-anchor="end">${fmtShortDate(lastKey)}</text>
       ${bars}
-      ${unit ? `<text x="${(w - padRight).toFixed(1)}" y="${padTop + 4}" class="axis-unit" text-anchor="end">${esc(unit)}</text>` : ''}
+      ${unit ? html`<text x="${(w - padRight).toFixed(1)}" y="${padTop + 4}" class="axis-unit" text-anchor="end">${unit}</text>` : ''}
     </svg>`;
 };
 
@@ -1620,7 +1662,7 @@ const renderExerciseDetail = (state, slug, editMode, origin = 'dashboard') => {
   const detailKind = exKind(catalogEntry?.template ?? all[all.length - 1] ?? {});
 
   let filtered = all;
-  if (detailRange === '30d') {
+  if (ui.detailRange === '30d') {
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - 30);
     const cutoffKey = `${cutoff.getFullYear()}-${String(cutoff.getMonth() + 1).padStart(2, '0')}-${String(cutoff.getDate()).padStart(2, '0')}`;
@@ -1635,45 +1677,45 @@ const renderExerciseDetail = (state, slug, editMode, origin = 'dashboard') => {
     const weightLabel = r.kind === 'time'
       ? (seriesDuration(r.series) || '—')
       : (fmtSeriesWeights(r.series, r.unit) ?? '—');
-    return `
+    return html`
       <li class="session-row">
-        <span class="session-date">${esc(fmtShortDate(r.date))}</span>
-        <span class="session-routine">${esc(routineLabel)}</span>
-        <span class="session-weight">${esc(weightLabel)}</span>
+        <span class="session-date">${fmtShortDate(r.date)}</span>
+        <span class="session-routine">${routineLabel}</span>
+        <span class="session-weight">${weightLabel}</span>
         <span class="session-sets mono">${r.setsDone}/${r.setsTotal}</span>
       </li>`;
-  }).join('');
+  });
 
   const drawer = editMode && catalogEntry
     ? renderCatalogEditDrawer(state, catalogEntry)
     : '';
 
-  return `
+  return html`
     <header class="workout-bar">
       ${backBtn(home, homeLabel)}
       <div class="title-block">
-        <div class="title">${esc(displayName)}</div>
+        <div class="title">${displayName}</div>
         <div class="sub">${sessions.length} ${sessions.length === 1 ? 'sesión' : 'sesiones'}${catalogEntry?.usedIn?.length ? ` · ${catalogEntry.usedIn.length} ${catalogEntry.usedIn.length === 1 ? 'rutina' : 'rutinas'}` : ''}</div>
       </div>
-      ${catalogEntry ? `<button class="tool-btn" data-go="#/${origin}/ex/${esc(slug)}/edit" aria-label="Editar ejercicio">${iconEdit}</button>` : '<span></span>'}
+      ${catalogEntry ? html`<button class="tool-btn" data-go="#/${origin}/ex/${slug}/edit" aria-label="Editar ejercicio">${icons.edit}</button>` : html`<span></span>`}
     </header>
 
     <div class="section">
       <span class="label">Progreso</span>
       <div class="range-toggle" role="tablist">
-        <button class="range-opt ${detailRange === '30d' ? 'on' : ''}" data-detail-range="30d" role="tab" aria-selected="${detailRange === '30d'}">30 días</button>
-        <button class="range-opt ${detailRange === 'all' ? 'on' : ''}" data-detail-range="all" role="tab" aria-selected="${detailRange === 'all'}">Todo</button>
+        <button class="range-opt ${ui.detailRange === '30d' ? 'on' : ''}" data-action="detail-range" data-detail-range="30d" role="tab" aria-selected="${ui.detailRange === '30d'}">30 días</button>
+        <button class="range-opt ${ui.detailRange === 'all' ? 'on' : ''}" data-action="detail-range" data-detail-range="all" role="tab" aria-selected="${ui.detailRange === 'all'}">Todo</button>
       </div>
     </div>
-    <div class="detail-chart-wrap" data-test-id="exercise-detail">${renderBarChart(all, detailKind)}</div>
+    <div class="detail-chart-wrap" ${dataTest('exercise-detail')}>${renderBarChart(all, detailKind)}</div>
 
     <div class="section">
       <span class="label">Sesiones</span>
       <span class="count">${String(sessions.length).padStart(2, '0')}</span>
     </div>
     ${sessions.length === 0
-      ? `<p class="muted small" style="padding:1rem 0.25rem">Sin sesiones en este rango.</p>`
-      : `<ul class="session-list">${sessionItems}</ul>`}
+      ? html`<p class="muted small" style="padding:1rem 0.25rem">Sin sesiones en este rango.</p>`
+      : html`<ul class="session-list">${sessionItems}</ul>`}
 
     ${drawer}
     ${bottomBar(state)}
@@ -1693,8 +1735,6 @@ const renderExerciseDetail = (state, slug, editMode, origin = 'dashboard') => {
 // imports), `categoryOf` falls back to a keyword guess so they still land
 // somewhere sensible; the rule order resolves overlaps — "remo al mentón" is a
 // shoulder move even though it says "remo"; "curl femoral" is legs not arms.
-const iconDumbbell = `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 8v8M8 6v12M16 6v12M19 8v8M8 12h8"/></svg>`;
-const iconClock = `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="13" r="7"/><path d="M12 10.5V13l1.8 1.2"/><path d="M9.5 3.5h5"/></svg>`;
 
 const CATEGORIES = {
   pecho:   { label: 'Pecho',   color: '#f0683c' },
@@ -1728,13 +1768,13 @@ const categoryOf = (c) => {
 const normCategory = (v) => (VALID_CATEGORY.has(v) ? v : 'otros');
 const categoryTile = (catKey, kind) => {
   const cat = CATEGORIES[catKey] || CATEGORIES.otros;
-  return `<span class="cat-tile" style="--cat:${cat.color}">${kind === 'time' ? iconClock : iconDumbbell}</span>`;
+  return html`<span class="cat-tile" style="--cat:${cat.color}">${kind === 'time' ? icons.clock : icons.dumbbell}</span>`;
 };
 // A <select> of muscle groups, pre-selected to `selected`. Extra attrs (e.g.
-// data-cat-update / data-update + ids) are passed through verbatim.
-const categorySelect = (selected, attrs = '') => `
-  <select name="category" ${attrs}>
-    ${CATEGORY_ORDER.map((k) => `<option value="${k}" ${normCategory(selected) === k ? 'selected' : ''}>${esc(CATEGORIES[k].label)}</option>`).join('')}
+// data-cat-update / data-update + ids) are trusted markup, passed through.
+const categorySelect = (selected, attrs = '') => html`
+  <select name="category" ${raw(attrs)}>
+    ${CATEGORY_ORDER.map((k) => html`<option value="${k}" ${normCategory(selected) === k ? 'selected' : ''}>${CATEGORIES[k].label}</option>`)}
   </select>`;
 
 // Secondary line of small chips: routine usage (kept in the "Día 02 + Día 05"
@@ -1742,20 +1782,20 @@ const categorySelect = (selected, attrs = '') => `
 // in-routine marker for pick mode.
 const catalogChips = (c, { inRoutine = false } = {}) => {
   const chips = [];
-  if (inRoutine) chips.push(`<span class="cat-chip in">✓ En la rutina</span>`);
+  if (inRoutine) chips.push(html`<span class="cat-chip in">✓ En la rutina</span>`);
   const used = c.usedIn.map((u) => `Día ${dayNum(u.routineIndex)}`).join(' + ');
-  if (used) chips.push(`<span class="cat-chip">${esc(used)}</span>`);
+  if (used) chips.push(html`<span class="cat-chip">${used}</span>`);
   const w = fmtWeight(c.lastWeight);
-  if (w) chips.push(`<span class="cat-chip weight">${esc(w)}</span>`);
-  if (c.sessionCount) chips.push(`<span class="cat-chip">${c.sessionCount} ${c.sessionCount === 1 ? 'sesión' : 'sesiones'}</span>`);
-  if (!chips.length) chips.push(`<span class="cat-chip ghost">Sin uso aún</span>`);
-  return `<span class="cat-chips">${chips.join('')}</span>`;
+  if (w) chips.push(html`<span class="cat-chip weight">${w}</span>`);
+  if (c.sessionCount) chips.push(html`<span class="cat-chip">${c.sessionCount} ${c.sessionCount === 1 ? 'sesión' : 'sesiones'}</span>`);
+  if (!chips.length) chips.push(html`<span class="cat-chip ghost">Sin uso aún</span>`);
+  return html`<span class="cat-chips">${chips}</span>`;
 };
 
-const catalogRowInner = (c, catKey, opts) => `
+const catalogRowInner = (c, catKey, opts) => html`
   ${categoryTile(catKey, c.kind)}
   <span class="catalog-text">
-    <span class="catalog-name">${esc(c.displayName)}</span>
+    <span class="catalog-name">${c.displayName}</span>
     ${catalogChips(c, opts)}
   </span>`;
 
@@ -1765,7 +1805,7 @@ const renderCatalog = (state, mode = 'view', routineId = null) => {
   const routine = isPick ? state.doc.routines.find((r) => r.id === routineId) : null;
   if (isPick && !routine) return renderHome(state);
 
-  const filter = normalizeName(catalogFilter);
+  const filter = normalizeName(ui.catalogFilter);
   // Only real catalog entries are listed; history-only rows (deleted exercises)
   // have no catalogId and aren't referenceable.
   const all = buildCatalog(state).filter((c) => c.catalogId);
@@ -1776,16 +1816,16 @@ const renderCatalog = (state, mode = 'view', routineId = null) => {
     const slug = slugify(c.displayName);
     if (isPick) {
       const inRoutine = routine.exercises.some((inst) => inst.catalogId === c.catalogId);
-      return `<li data-test-id="catalog-item"><button class="catalog-row" data-pick-catalog data-name="${esc(c.displayName)}">${catalogRowInner(c, catKey, { inRoutine })}<span class="catalog-chev plus" aria-hidden="true">＋</span></button></li>`;
+      return html`<li ${dataTest('catalog-item')}><button class="catalog-row" data-action="pick-catalog" data-name="${c.displayName}">${catalogRowInner(c, catKey, { inRoutine })}<span class="catalog-chev plus" aria-hidden="true">＋</span></button></li>`;
     }
     if (isEdit) {
-      return `
-        <li class="catalog-manage-row" data-test-id="catalog-item">
-          <button class="catalog-row" data-go="#/catalog/ex/${esc(slug)}/edit">${catalogRowInner(c, catKey)}<span class="catalog-chev" aria-hidden="true">✎</span></button>
-          <button class="catalog-del-btn" data-test-id="catalog-delete" data-delete-catalog data-name="${esc(c.displayName)}" aria-label="Eliminar ${esc(c.displayName)}">${iconTrash}</button>
+      return html`
+        <li class="catalog-manage-row" ${dataTest('catalog-item')}>
+          <button class="catalog-row" data-go="#/catalog/ex/${slug}/edit">${catalogRowInner(c, catKey)}<span class="catalog-chev" aria-hidden="true">✎</span></button>
+          <button class="catalog-del-btn" ${dataTest('catalog-delete')} data-action="delete-catalog" data-name="${c.displayName}" aria-label="Eliminar ${c.displayName}">${icons.trash}</button>
         </li>`;
     }
-    return `<li data-test-id="catalog-item"><button class="catalog-row" data-go="#/catalog/ex/${esc(slug)}">${catalogRowInner(c, catKey)}<span class="catalog-chev" aria-hidden="true">›</span></button></li>`;
+    return html`<li ${dataTest('catalog-item')}><button class="catalog-row" data-go="#/catalog/ex/${slug}">${catalogRowInner(c, catKey)}<span class="catalog-chev" aria-hidden="true">›</span></button></li>`;
   };
 
   // Group rows into muscle-group sections, ordered by CATEGORY_ORDER, alpha
@@ -1799,23 +1839,23 @@ const renderCatalog = (state, mode = 'view', routineId = null) => {
   const items = CATEGORY_ORDER.filter((k) => groups.has(k)).map((k) => {
     const rows = groups.get(k).sort((a, b) => a.displayName.localeCompare(b.displayName));
     const cat = CATEGORIES[k];
-    return `
+    return html`
       <div class="catalog-group">
         <div class="catalog-group-head" style="--cat:${cat.color}">
           <span class="catalog-group-dot" aria-hidden="true"></span>
-          <span class="catalog-group-label">${esc(cat.label)}</span>
+          <span class="catalog-group-label">${cat.label}</span>
           <span class="catalog-group-count">${String(rows.length).padStart(2, '0')}</span>
         </div>
-        <ul class="catalog-list">${rows.map(renderRow).join('')}</ul>
+        <ul class="catalog-list">${rows.map(renderRow)}</ul>
       </div>`;
-  }).join('');
+  });
 
   const title = isPick ? 'Agregar ejercicio' : 'Catálogo';
-  const backHref = isPick ? `#/workout/${esc(routine.id)}/edit` : '#/';
+  const backHref = isPick ? `#/workout/${routine.id}/edit` : '#/';
   // Create-new affordance: in pick mode a labelled button that also adds the
   // new exercise to the routine; in edit mode a FAB at the bottom.
   const newBtn = isPick
-    ? `<button class="catalog-new" data-add-catalog-exercise data-routine="${esc(routine.id)}">
+    ? html`<button class="catalog-new" data-action="add-catalog-exercise" data-routine="${routine.id}">
          <span class="catalog-new-icon" aria-hidden="true">＋</span>
          <span class="catalog-new-text">
            <span class="catalog-new-title">Crear ejercicio nuevo</span>
@@ -1823,33 +1863,33 @@ const renderCatalog = (state, mode = 'view', routineId = null) => {
          </span>
        </button>`
     : '';
-  const fab = isEdit ? `
+  const fab = isEdit ? html`
     <div class="fab-row">
-      <button class="fab" data-test-id="catalog-create" data-add-catalog-exercise aria-label="Crear ejercicio">
+      <button class="fab" ${dataTest('catalog-create')} data-action="add-catalog-exercise" aria-label="Crear ejercicio">
         <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
       </button>
     </div>` : '';
   const primary = isPick ? ''
     : (isEdit
-        ? '<button class="icon-btn primary" data-go="#/catalog">Listo</button>'
-        : '<button class="icon-btn primary" data-go="#/catalog/edit">Editar</button>');
+        ? html`<button class="icon-btn primary" data-go="#/catalog">Listo</button>`
+        : html`<button class="icon-btn primary" data-go="#/catalog/edit">Editar</button>`);
 
-  return `
-    <header class="workout-bar">
-      ${backBtn(backHref, isPick ? 'Volver a la rutina' : 'Volver al inicio')}
-      <div class="title-block">
-        <div class="title">${esc(title)}</div>
-        <div class="sub">${list.length} ${list.length === 1 ? 'ejercicio' : 'ejercicios'}</div>
-      </div>
-      <span></span>
-    </header>
-    <div class="catalog-filter-wrap">
-      <input type="text" id="catalog-filter" data-test-id="catalog-search" class="catalog-filter"
-             placeholder="Buscar ejercicio…" autocomplete="off"
-             value="${esc(catalogFilter)}" />
+  return html`
+    <div class="screen-head">
+      <header class="workout-bar">
+        ${backBtn(backHref, isPick ? 'Volver a la rutina' : 'Volver al inicio')}
+        <div class="title-block">
+          <div class="title">${title}</div>
+          <div class="sub">${list.length} ${list.length === 1 ? 'ejercicio' : 'ejercicios'}</div>
+        </div>
+        <span></span>
+      </header>
+      ${searchField('catalog-filter', ui.catalogFilter, { test: dataTest('catalog-search') })}
     </div>
     ${newBtn}
-    ${items || `<p class="muted small" style="padding:0.5rem 0.25rem">No hay ejercicios que coincidan.</p>`}
+    ${items.length ? items
+        : (filter ? emptySearch(ui.catalogFilter, isPick ? routineId : null)
+                  : html`<p class="muted small" style="padding:0.5rem 0.25rem">No hay ejercicios todavía.</p>`)}
     ${fab}
     ${bottomBar(state, primary)}
   `;
@@ -1860,19 +1900,21 @@ const renderCatalog = (state, mode = 'view', routineId = null) => {
 const renderCatalogEditDrawer = (state, catalogEntry) => {
   const template = catalogEntry.template ?? { video: '', notes: '' };
   const usedCount = catalogEntry.usedIn.length;
-  return `
-    <div class="drawer-backdrop" data-close-catalog-edit></div>
+  return html`
+    <div class="drawer-backdrop" data-action="close-catalog-edit"></div>
     <aside class="drawer" role="dialog" aria-modal="true" aria-label="Editar ejercicio del catálogo">
-      <div class="drawer-handle" aria-hidden="true"></div>
-      <div class="drawer-header">
-        <h3>Editar ejercicio</h3>
-        <button class="icon-btn" data-close-catalog-edit aria-label="Cerrar">✕</button>
+      <div class="drawer-head">
+        <div class="drawer-handle" aria-hidden="true"></div>
+        <div class="drawer-header">
+          <h3>Editar ejercicio</h3>
+          <button class="icon-btn" data-action="close-catalog-edit" aria-label="Cerrar">✕</button>
+        </div>
       </div>
       <div class="drawer-body">
         <p class="edit-hint">El nombre, la imagen y las notas se aplican a las <em>${usedCount}</em> rutina${usedCount === 1 ? '' : 's'} que usan este ejercicio. El peso y las reps se ajustan en cada rutina.</p>
         <div class="field">
           <label>Nombre</label>
-          <input type="text" data-cat-update name="name" value="${esc(catalogEntry.displayName)}" />
+          <input type="text" data-cat-update name="name" value="${catalogEntry.displayName}" />
         </div>
         <div class="field">
           <label>Grupo muscular</label>
@@ -1880,22 +1922,22 @@ const renderCatalogEditDrawer = (state, catalogEntry) => {
         </div>
         <div class="field">
           <label>Imagen o video (URL)</label>
-          <input type="text" data-cat-update name="video" value="${esc(template.video ?? '')}"
+          <input type="text" data-cat-update name="video" value="${template.video ?? ''}"
                  placeholder="https://youtu.be/..." />
         </div>
         <div class="field">
           <label>Notas</label>
-          <input type="text" data-cat-update name="notes" value="${esc(template.notes ?? '')}" />
+          <input type="text" data-cat-update name="notes" value="${template.notes ?? ''}" />
         </div>
         <div class="bottom-action">
-          <button class="primary" data-close-catalog-edit>Listo</button>
+          <button class="primary" data-action="close-catalog-edit">Listo</button>
         </div>
         <div class="bottom-action">
-          <button class="danger" data-delete-catalog data-name="${esc(catalogEntry.displayName)}">
+          <button class="danger" data-action="delete-catalog" data-name="${catalogEntry.displayName}">
             Eliminar ejercicio
           </button>
         </div>
-        ${usedCount > 0 ? `
+        ${usedCount > 0 ? html`
         <p class="muted small" style="padding:0.5rem 0.25rem">Se quitará de la${usedCount === 1 ? '' : 's'} ${usedCount} rutina${usedCount === 1 ? '' : 's'} que lo usa${usedCount === 1 ? '' : 'n'}. Las sesiones registradas se mantienen.</p>` : ''}
       </div>
     </aside>
@@ -1940,37 +1982,37 @@ const renderBuild = (state, step, editExerciseId) => {
   const dots = routines.map((r, i) => {
     const filled = r.exercises.length > 0;
     const cls = i === idx ? 'on' : (filled ? 'done' : '');
-    return `<span class="build-dot ${cls}" aria-hidden="true"></span>`;
-  }).join('');
+    return html`<span class="build-dot ${cls}" aria-hidden="true"></span>`;
+  });
 
   const exItems = routine.exercises.map((inst) => {
     const ex = hydrateExercise(state, inst);
     const catKey = categoryOf({ category: ex.category, displayName: ex.name, kind: ex.kind });
-    return `
+    return html`
       <div class="build-ex">
         ${categoryTile(catKey, ex.kind)}
         <div class="build-ex-text">
-          <span class="build-ex-name">${esc(ex.name)}</span>
-          <span class="build-ex-sub">${esc(exerciseSummary(ex))}</span>
+          <span class="build-ex-name">${ex.name}</span>
+          <span class="build-ex-sub">${exerciseSummary(ex)}</span>
         </div>
-        <button class="build-ex-btn" data-build-edit data-routine="${esc(routine.id)}" data-exercise="${esc(ex.id)}" data-step="${idx}" aria-label="Editar ${esc(ex.name)}">${iconEdit}</button>
-        <button class="build-ex-btn danger-edit" data-remove-exercise data-routine="${esc(routine.id)}" data-exercise="${esc(ex.id)}" aria-label="Quitar ${esc(ex.name)}">${iconTrash}</button>
+        <button class="build-ex-btn" data-action="build-edit" data-routine="${routine.id}" data-exercise="${ex.id}" data-step="${idx}" aria-label="Editar ${ex.name}">${icons.edit}</button>
+        <button class="build-ex-btn danger-edit" data-action="remove-exercise" data-routine="${routine.id}" data-exercise="${ex.id}" aria-label="Quitar ${ex.name}">${icons.trash}</button>
       </div>`;
-  }).join('');
+  });
 
   const body = routine.exercises.length === 0
-    ? `<div class="build-empty">
+    ? html`<div class="build-empty">
          <p>Agregá los ejercicios de este día, o dejalo vacío para marcarlo como <strong>descanso</strong>.</p>
        </div>`
-    : `<div class="build-ex-list">${exItems}</div>`;
+    : html`<div class="build-ex-list">${exItems}</div>`;
 
   const drawer = editExerciseId
     ? renderDrawer(routine, hydrateExercise(state, routine.exercises.find((e) => e.id === editExerciseId)))
     : '';
 
-  return `
+  return html`
     <header class="build-bar">
-      <button class="back-btn" data-build-finish aria-label="Salir del armado">✕</button>
+      <button class="back-btn" data-action="build-finish" aria-label="Salir del armado">✕</button>
       <div class="build-progress">
         <div class="build-step-label">Armar mi semana · Paso ${idx + 1} de ${total}</div>
         <div class="build-dots">${dots}</div>
@@ -1979,11 +2021,11 @@ const renderBuild = (state, step, editExerciseId) => {
     </header>
 
     <div class="build-day">
-      <span class="build-day-eyebrow">Día ${esc(dayWord(idx))}</span>
-      <input class="build-day-name" type="text" data-rename-routine data-routine="${esc(routine.id)}"
-             value="${esc(routine.name)}" placeholder="Nombre del día" aria-label="Nombre del día" maxlength="80" />
+      <span class="build-day-eyebrow">Día ${dayWord(idx)}</span>
+      <input class="build-day-name" type="text" data-rename-routine data-routine="${routine.id}"
+             value="${routine.name}" placeholder="Nombre del día" aria-label="Nombre del día" maxlength="80" />
       ${body}
-      <button class="build-add" data-build-add data-routine="${esc(routine.id)}">
+      <button class="build-add" data-action="build-add" data-routine="${routine.id}">
         <span class="build-add-icon" aria-hidden="true">＋</span>
         Agregar ejercicios
       </button>
@@ -1992,8 +2034,8 @@ const renderBuild = (state, step, editExerciseId) => {
     <nav class="build-nav">
       <button class="ghost" data-go="#/build/${idx - 1}" ${idx === 0 ? 'disabled' : ''}>Atrás</button>
       ${isLast
-        ? `<button class="primary" data-build-finish>Terminar</button>`
-        : `<button class="primary" data-go="#/build/${idx + 1}">Siguiente</button>`}
+        ? html`<button class="primary" data-action="build-finish">Terminar</button>`
+        : html`<button class="primary" data-go="#/build/${idx + 1}">Siguiente</button>`}
     </nav>
     ${drawer}
   `;
@@ -2004,7 +2046,7 @@ const renderBuild = (state, step, editExerciseId) => {
 const renderBuildPickSheet = (state, step) => {
   const routine = state.doc.routines[Math.min(step, state.doc.routines.length - 1)];
   if (!routine) return '';
-  const filter = normalizeName(buildPickFilter);
+  const filter = normalizeName(ui.buildPickFilter);
   const all = buildCatalog(state).filter((c) => c.catalogId);
   const list = all.filter((c) => !filter || c.name.includes(filter));
 
@@ -2018,50 +2060,51 @@ const renderBuildPickSheet = (state, step) => {
     const rows = groups.get(k).sort((a, b) => a.displayName.localeCompare(b.displayName));
     const cat = CATEGORIES[k];
     const rowsHtml = rows.map((c) => {
-      const sel = buildPickSelected.has(c.catalogId);
+      const sel = ui.buildPickSelected.has(c.catalogId);
       const inRoutine = routine.exercises.some((inst) => inst.catalogId === c.catalogId);
-      return `
-        <button class="build-pick-row ${sel ? 'sel' : ''}" data-build-pick-toggle data-catalog-id="${esc(c.catalogId)}">
+      return html`
+        <button class="build-pick-row ${sel ? 'sel' : ''}" data-action="build-pick-toggle" data-catalog-id="${c.catalogId}">
           <span class="build-pick-check" aria-hidden="true"></span>
           ${categoryTile(k, c.kind)}
-          <span class="build-pick-name">${esc(c.displayName)}${inRoutine ? ` <span class="build-pick-in">ya está</span>` : ''}</span>
+          <span class="build-pick-name">${c.displayName}${inRoutine ? html` <span class="build-pick-in">ya está</span>` : ''}</span>
         </button>`;
-    }).join('');
-    return `
+    });
+    return html`
       <div class="catalog-group">
         <div class="catalog-group-head" style="--cat:${cat.color}">
           <span class="catalog-group-dot" aria-hidden="true"></span>
-          <span class="catalog-group-label">${esc(cat.label)}</span>
+          <span class="catalog-group-label">${cat.label}</span>
         </div>
         <div class="build-pick-list">${rowsHtml}</div>
       </div>`;
-  }).join('');
+  });
 
-  const n = buildPickSelected.size;
-  return `
-    <div class="drawer-backdrop" data-build-pick-cancel></div>
+  const n = ui.buildPickSelected.size;
+  return html`
+    <div class="drawer-backdrop" data-action="build-pick-cancel"></div>
     <aside class="drawer build-pick-drawer" role="dialog" aria-modal="true" aria-label="Agregar ejercicios">
-      <div class="drawer-handle" aria-hidden="true"></div>
-      <div class="drawer-header">
-        <h3>Agregar a ${esc(routine.name)}</h3>
-        <button class="icon-btn" data-build-pick-cancel aria-label="Cerrar">✕</button>
+      <div class="drawer-head">
+        <div class="drawer-handle" aria-hidden="true"></div>
+        <div class="drawer-header">
+          <h3>Agregar a ${routine.name}</h3>
+          <button class="icon-btn" data-action="build-pick-cancel" aria-label="Cerrar">✕</button>
+        </div>
+        ${searchField('build-pick-filter', ui.buildPickFilter)}
       </div>
       <div class="drawer-body">
-        <div class="catalog-filter-wrap">
-          <input type="text" id="build-pick-filter" class="catalog-filter"
-                 placeholder="Buscar ejercicio…" autocomplete="off" value="${esc(buildPickFilter)}" />
-        </div>
-        <button class="catalog-new" data-add-catalog-exercise>
+        <button class="catalog-new" data-action="add-catalog-exercise">
           <span class="catalog-new-icon" aria-hidden="true">＋</span>
           <span class="catalog-new-text">
             <span class="catalog-new-title">Crear ejercicio nuevo</span>
             <span class="catalog-new-sub">Se agrega al catálogo</span>
           </span>
         </button>
-        ${sections || `<p class="muted small" style="padding:0.5rem 0.25rem">No hay ejercicios que coincidan.</p>`}
+        ${sections.length ? sections
+            : (filter ? emptySearch(ui.buildPickFilter)
+                      : html`<p class="muted small" style="padding:0.5rem 0.25rem">No hay ejercicios todavía.</p>`)}
       </div>
       <div class="build-pick-foot">
-        <button class="primary" data-build-pick-commit ${n === 0 ? 'disabled' : ''}>
+        <button class="primary" data-action="build-pick-commit" ${n === 0 ? 'disabled' : ''}>
           ${n === 0 ? 'Elegí ejercicios' : `Agregar ${n}`}
         </button>
       </div>
@@ -2070,8 +2113,8 @@ const renderBuildPickSheet = (state, step) => {
 };
 
 const renderEdit = (state) => {
-  const items = state.doc.routines.map((r, i) => `
-    <div class="edit-row" data-reorder-index="${i}" data-routine-id="${esc(r.id)}">
+  const items = state.doc.routines.map((r, i) => html`
+    <div class="edit-row" data-reorder-index="${i}" data-routine-id="${r.id}">
       <button class="drag-handle" data-drag-handle aria-label="Arrastrar para reordenar">
         <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true">
           <circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/>
@@ -2081,15 +2124,15 @@ const renderEdit = (state) => {
       </button>
       <span class="rc-badge">${dayNum(i)}</span>
       <input class="edit-row-name" type="text"
-             data-rename-routine data-routine="${esc(r.id)}"
-             value="${esc(r.name)}" aria-label="Nombre de la rutina" />
+             data-rename-routine data-routine="${r.id}"
+             value="${r.name}" aria-label="Nombre de la rutina" />
       <button class="ex-edit danger-edit"
-              data-remove-routine data-routine="${esc(r.id)}"
+              data-action="remove-routine" data-routine="${r.id}"
               aria-label="Eliminar rutina">✕</button>
     </div>
-  `).join('');
+  `);
 
-  return `
+  return html`
     <header class="app-bar">
       <div class="app-bar-left">
         ${backBtn('#/')}
@@ -2110,9 +2153,9 @@ const renderEdit = (state) => {
       </span>
       <span class="catalog-chev" aria-hidden="true">›</span>
     </button>
-    <div class="edit-list" data-test-id="routines-editor" data-reorder-list>${items}</div>
+    <div class="edit-list" ${dataTest('routines-editor')} data-reorder-list>${items}</div>
     <div class="fab-row">
-      <button class="fab" data-add-routine aria-label="Nueva rutina">
+      <button class="fab" data-action="add-routine" aria-label="Nueva rutina">
         <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
       </button>
     </div>
@@ -2120,46 +2163,53 @@ const renderEdit = (state) => {
   `;
 };
 
-
 // ---------- render dispatch ----------
+
+// route.name → view. Each adapts the route object to the renderer's arguments,
+// keeping the renderX signatures untouched.
+const views = {
+  home: (s) => renderHome(s),
+  workout: (s, r) => renderWorkout(s, r.routineId, r.editExerciseId, !!r.editMode),
+  edit: (s) => renderEdit(s),
+  log: (s) => renderLog(s),
+  motivation: () => renderMotivation(),
+  dashboard: (s) => renderDashboard(s),
+  catalog: (s, r) => renderCatalog(s, r.mode, r.routineId),
+  exercise: (s, r) => renderExerciseDetail(s, r.slug, !!r.editMode, r.origin),
+  build: (s, r) => renderBuild(s, r.step, r.editExerciseId),
+};
+// Overlays append to the main view, in stacking order, when their flag is set.
+const overlays = [
+  { when: (r) => ui.buildPickOpen && r.name === 'build', html: (s, r) => renderBuildPickSheet(s, r.step) },
+  { when: () => ui.menuOpen, html: () => renderMenuSheet() },
+  { when: () => ui.newRoutineOpen, html: () => renderNewRoutineSheet() },
+  { when: () => ui.catalogFormOpen, html: () => renderCatalogFormSheet() },
+  { when: () => stopwatchOpen, html: () => renderStopwatchSheet() },
+];
 
 const render = (state) => {
   state._undo = store.canUndo();
   state._redo = store.canRedo();
 
   const route = parseRoute();
-  // The catalog-edit drawer's bulk dispatchers read `catalogEditName` to
+  // The catalog-edit drawer's bulk dispatchers read `ui.catalogEditName` to
   // know which exercise's instances to update. Keep it in sync with the
   // route so navigation alone is enough state.
-  catalogEditName = (route.name === 'exercise' && route.editMode)
+  ui.catalogEditName = (route.name === 'exercise' && route.editMode)
     ? normalizeName(unslug(route.slug))
     : null;
-  let html;
-  if (route.name === 'workout') html = renderWorkout(state, route.routineId, route.editExerciseId, !!route.editMode);
-  else if (route.name === 'edit') html = renderEdit(state);
-  else if (route.name === 'log') html = renderLog(state);
-  else if (route.name === 'motivation') html = renderMotivation(state);
-  else if (route.name === 'dashboard') html = renderDashboard(state);
-  else if (route.name === 'catalog') html = renderCatalog(state, route.mode, route.routineId);
-  else if (route.name === 'exercise') html = renderExerciseDetail(state, route.slug, !!route.editMode, route.origin);
-  else if (route.name === 'build') html = renderBuild(state, route.step, route.editExerciseId);
-  else html = renderHome(state);
-
-  if (buildPickOpen && route.name === 'build') html += renderBuildPickSheet(state, route.step);
-  if (menuOpen) html += renderMenuSheet();
-  if (newRoutineOpen) html += renderNewRoutineSheet();
-  if (catalogFormOpen) html += renderCatalogFormSheet();
-  if (stopwatchOpen) html += renderStopwatchSheet();
+  let html = (views[route.name] ?? views.home)(state, route);
+  for (const o of overlays) if (o.when(route)) html += o.html(state, route);
 
   const exerciseEditDrawerOpen = route.name === 'exercise' && !!route.editMode;
-  const buildDrawerOpen = route.name === 'build' && (!!route.editExerciseId || buildPickOpen);
-  const drawerOpen = (route.name === 'workout' && !!route.editExerciseId) || menuOpen || newRoutineOpen || catalogFormOpen || stopwatchOpen || exerciseEditDrawerOpen || buildDrawerOpen;
-  const suppressDrawerAnim = drawerOpen && lastDrawerOpen;
+  const buildDrawerOpen = route.name === 'build' && (!!route.editExerciseId || ui.buildPickOpen);
+  const drawerOpen = (route.name === 'workout' && !!route.editExerciseId) || ui.menuOpen || ui.newRoutineOpen || ui.catalogFormOpen || stopwatchOpen || exerciseEditDrawerOpen || buildDrawerOpen;
+  const suppressDrawerAnim = drawerOpen && ui.lastDrawerOpen;
 
   const routeKey = JSON.stringify(route);
-  const sameRoute = routeKey === lastRouteKey;
+  const sameRoute = routeKey === ui.lastRouteKey;
 
-  const ui = captureUIState();
+  const snap = captureUIState();
   mount(html);
   if (suppressDrawerAnim) {
     const drawer = root.querySelector('.drawer');
@@ -2167,23 +2217,23 @@ const render = (state) => {
     if (drawer) drawer.classList.add('no-anim');
     if (backdrop) backdrop.classList.add('no-anim');
   }
-  restoreUIState(ui);
+  restoreUIState(snap);
 
   // Scroll: keep position on same-route re-renders (undo, set toggles,
   // weight changes…), reset to top when the URL actually changed.
   if (sameRoute) {
-    window.scrollTo({ top: ui.pageScroll || 0, left: 0, behavior: 'instant' });
+    window.scrollTo({ top: snap.pageScroll || 0, left: 0, behavior: 'instant' });
   } else {
     window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
   }
 
   if (drawerOpen) document.body.setAttribute('data-drawer-open', '');
   else document.body.removeAttribute('data-drawer-open');
-  lastDrawerOpen = drawerOpen;
-  lastRouteKey = routeKey;
+  ui.lastDrawerOpen = drawerOpen;
+  ui.lastRouteKey = routeKey;
 
   // Auto-focus the name field when the new-routine drawer first opens.
-  if (newRoutineOpen) {
+  if (ui.newRoutineOpen) {
     const input = document.getElementById('new-routine-name');
     if (input && document.activeElement !== input) {
       requestAnimationFrame(() => input.focus());
@@ -2191,26 +2241,32 @@ const render = (state) => {
   }
   // Same for the new-catalog-exercise form — also re-focuses after each
   // "Guardar y crear otro" so the user can keep typing.
-  if (catalogFormOpen) {
+  if (ui.catalogFormOpen) {
     const input = document.getElementById('cat-form-name');
     if (input && document.activeElement !== input) {
-      requestAnimationFrame(() => input.focus());
+      requestAnimationFrame(() => {
+        input.focus();
+        // Drop the caret at the end of any pre-seeded name so the user keeps typing.
+        try { input.setSelectionRange(input.value.length, input.value.length); } catch {}
+      });
     }
+    // One-shot: don't let the prefill reappear on a later, unrelated open.
+    ui.catalogFormPrefill = '';
   }
   // Keep the caret in the catalog screen's search box across filter
   // re-renders. Caret only (no auto-keyboard) so it isn't jarring on mobile.
   if (route.name === 'catalog') {
     const input = document.getElementById('catalog-filter');
-    if (input && document.activeElement !== input && catalogFilter) {
+    if (input && document.activeElement !== input && ui.catalogFilter) {
       requestAnimationFrame(() => {
         input.focus({ preventScroll: true });
         try { input.setSelectionRange(input.value.length, input.value.length); } catch {}
       });
     }
   }
-  if (buildPickOpen) {
+  if (ui.buildPickOpen) {
     const input = document.getElementById('build-pick-filter');
-    if (input && document.activeElement !== input && buildPickFilter) {
+    if (input && document.activeElement !== input && ui.buildPickFilter) {
       requestAnimationFrame(() => {
         input.focus({ preventScroll: true });
         try { input.setSelectionRange(input.value.length, input.value.length); } catch {}
@@ -2239,48 +2295,37 @@ const render = (state) => {
   //   - use el.onclick = fn (not addEventListener — only the property
   //     assignment satisfies the iOS heuristic)
   //   - .drawer-backdrop also has cursor: pointer in CSS
-  // The delegated onClick still serves all real <button> tap targets.
+  // The delegated click registry still serves all real <button> tap targets.
   const titleEl = root.querySelector('[data-tap-title]');
   if (titleEl) titleEl.onclick = onTitleTap;
   const motivEl = root.querySelector('.motivation');
   if (motivEl) motivEl.onclick = () => go('#/');
+  // Each backdrop carries the same data-close-*/data-cancel-* attribute as its
+  // matching close button, so it routes through the very same click registry.
   root.querySelectorAll('.drawer-backdrop').forEach((bd) => {
-    bd.onclick = () => {
-      if (bd.hasAttribute('data-close-menu')) {
-        menuOpen = false;
-        render(store.state);
-      } else if (bd.hasAttribute('data-cancel-new-routine')) {
-        newRoutineOpen = false;
-        render(store.state);
-      } else if (bd.hasAttribute('data-cancel-catalog-form')) {
-        // Tapping outside the create form closes it, back to the catalog screen.
-        catalogFormOpen = false;
-        catalogPickRoutineId = null;
-        render(store.state);
-      } else if (bd.hasAttribute('data-close-stopwatch')) {
-        closeStopwatch();
-      } else if (bd.hasAttribute('data-close-catalog-edit')) {
-        const route = parseRoute();
-        if (route.name === 'exercise' && route.editMode) {
-          if (history.length > 1) history.back();
-          else go(`#/${route.origin || 'dashboard'}/ex/${route.slug}`);
-        }
-      } else if (bd.hasAttribute('data-build-pick-cancel')) {
-        buildPickOpen = false;
-        buildPickSelected.clear();
-        buildPickFilter = '';
-        render(store.state);
-      } else if (bd.hasAttribute('data-close-drawer')) {
-        const route = parseRoute();
-        if (route.name === 'build' && route.editExerciseId) {
-          go(`#/build/${route.step}`);
-        } else if (route.name === 'workout' && route.editExerciseId) {
-          if (history.length > 1) history.back();
-          else go(`#/workout/${route.routineId}`);
-        }
-      }
-    };
+    bd.onclick = (e) => runAction(bd, e);
   });
+
+  // Scroll-aware elevation: a sticky header only grows its divider + shadow
+  // once content has actually scrolled beneath it (the iOS large-title feel).
+  // The frosted plate itself is always opaque — only the lift is gated.
+  const pageHead = root.querySelector(':scope > .screen-head, :scope > .workout-bar');
+  const setPageStuck = () => { if (pageHead) pageHead.classList.toggle('is-stuck', window.scrollY > 4); };
+  // One persistent window listener, repointed at the current header each render.
+  if (ui._onScroll) window.removeEventListener('scroll', ui._onScroll);
+  ui._onScroll = setPageStuck;
+  window.addEventListener('scroll', setPageStuck, { passive: true });
+  setPageStuck();
+
+  // Drawers scroll independently — gate their cap's lift on the drawer's own
+  // scrollTop. The listener dies with the drawer element on the next render.
+  const drawerEl = root.querySelector('.drawer');
+  const drawerHead = drawerEl?.querySelector('.drawer-head');
+  if (drawerEl && drawerHead) {
+    const setDrawerStuck = () => drawerHead.classList.toggle('is-stuck', drawerEl.scrollTop > 4);
+    drawerEl.addEventListener('scroll', setDrawerStuck, { passive: true });
+    setDrawerStuck();
+  }
 };
 
 // ---------- Export / Import ----------
@@ -2377,377 +2422,345 @@ const importConfig = async () => {
 };
 
 // ---------- event delegation ----------
+//
+// One delegated listener per event type. Each registry maps a data-attribute
+// (or, for `delegateById`, an element id) to a handler `(el, event)`. The
+// `closest()` selector is *derived from the registry keys*, so it can never
+// drift out of sync with the handlers again. First matching attribute wins
+// (object insertion order = the old if-chain precedence).
 
-const onClick = async (e) => {
-  const t = e.target.closest('[data-go],[data-done],[data-undo],[data-redo],[data-toggle-set],[data-toggle-media],[data-clear-sets],[data-add-routine],[data-add-exercise],[data-remove-exercise],[data-remove-routine],[data-reset],[data-edit-exercise],[data-close-drawer],[data-menu],[data-close-menu],[data-export],[data-import],[data-cancel-new-routine],[data-add-catalog-exercise],[data-cancel-catalog-form],[data-stopwatch],[data-close-stopwatch],[data-pick-catalog],[data-close-catalog-edit],[data-detail-range],[data-delete-catalog],[data-series-step],[data-build-add],[data-build-edit],[data-build-pick-toggle],[data-build-pick-commit],[data-build-pick-cancel],[data-build-finish]');
-  if (!t) return;
+// change / input / submit are keyed by attribute / element id.
+const fire = (registry, el, e) => {
+  if (!el) return;
+  for (const attr in registry) if (el.hasAttribute(attr)) return registry[attr](el, e);
+};
+const delegate = (type, registry, target = window) => {
+  const sel = Object.keys(registry).map((a) => `[${a}]`).join(',');
+  target.addEventListener(type, (e) => fire(registry, e.target.closest(sel), e));
+};
+const delegateById = (type, registry, target = window) => {
+  target.addEventListener(type, (e) => registry[e.target.id]?.(e.target, e));
+};
 
-  if (t.hasAttribute('data-go')) {
-    go(t.getAttribute('data-go'));
-    return;
+// Clicks dispatch on a single `data-action="verb"`; navigation keeps the terse,
+// value-bearing `data-go="#/path"`. Param attributes (data-routine, data-name,
+// data-index, …) ride along and are read by each handler. Backdrop taps reuse
+// this same path (see render()), so "close" logic has one home.
+const runAction = (el, e) => {
+  if (!el) return;
+  const name = el.dataset.action ?? (el.dataset.go != null ? 'go' : null);
+  if (name) clickActions[name]?.(el, e);
+};
+const onClick = (e) => runAction(e.target.closest('[data-action],[data-go]'), e);
+
+// --- click action handlers (the heavier ones extracted for readability) ---
+
+const toggleSet = (t) => {
+  const exerciseId = t.dataset.exercise;
+  const setIndex = Number(t.dataset.index);
+  const from = t.dataset.from === '1';
+  const date = todayKey();
+  const to = !from;
+  // Snapshot only refreshes on completion (false → true). Toggling off
+  // preserves the existing snapshot so undo behaves predictably.
+  const found = findExerciseInState(store.state, exerciseId);
+  const hx = found ? hydrateExercise(store.state, found.exercise) : null;
+  const fromSnapshot = sessionSnapshot(store.state, date, exerciseId);
+  const snapshot = to && hx
+    ? {
+        name: hx.name,
+        kind: exKind(hx),
+        unit: exUnit(hx),
+        // Full per-set breakdown — history derives weight list + volume.
+        series: structuredClone(exSeries(hx)),
+        routineId: found.routine.id,
+      }
+    : undefined;
+  store.dispatch(makeCommand('TOGGLE_SET', {
+    date, exerciseId, setIndex, from, to,
+    ...(snapshot !== undefined ? { snapshot, fromSnapshot } : {}),
+  }));
+};
+
+const clearSets = async (t) => {
+  const date = t.dataset.date;
+  const current = store.state.doc.sessions[date];
+  if (!current || Object.keys(current).length === 0) return;
+  const ok = await confirmModal({
+    title: 'Volver a empezar',
+    message: 'Se van a desmarcar todas las series que completaste hoy. Vas a poder deshacer la acción.',
+    confirmLabel: 'Volver a empezar',
+    cancelLabel: 'Cancelar',
+    destructive: true,
+  });
+  if (!ok) return;
+  store.dispatch(makeCommand('CLEAR_SETS', { date, from: structuredClone(current), to: null }));
+};
+
+const addExercise = (t) => {
+  // Go to the catalog in pick mode for this routine.
+  const routineId = t.dataset.routine;
+  const r = store.state.doc.routines.find((x) => x.id === routineId);
+  if (!r) return;
+  ui.catalogFilter = '';
+  go(`#/catalog/pick/${routineId}`);
+};
+
+const buildPickCommit = () => {
+  const route = parseRoute();
+  if (route.name !== 'build') return;
+  const routine = store.state.doc.routines[Math.min(route.step, store.state.doc.routines.length - 1)];
+  if (!routine || ui.buildPickSelected.size === 0) return;
+  // Insert one reference per ticked catalog entry, in catalog order.
+  const cat = buildCatalog(store.state).filter((c) => c.catalogId && ui.buildPickSelected.has(c.catalogId));
+  for (const c of cat) {
+    store.dispatch(makeCommand('ADD_EXERCISE', {
+      routineId: routine.id, index: routine.exercises.length, exercise: instanceFromCatalog(c),
+    }));
   }
-  if (t.hasAttribute('data-done')) {
+  const n = ui.buildPickSelected.size;
+  ui.buildPickOpen = false;
+  ui.buildPickSelected.clear();
+  ui.buildPickFilter = '';
+  render(store.state);
+  showToast(`${n} ${n === 1 ? 'ejercicio agregado' : 'ejercicios agregados'}`);
+};
+
+const pickCatalog = (t) => {
+  // Insert a reference to the chosen catalog entry into the pick routine,
+  // then open the new instance's editor to set its series.
+  const route = parseRoute();
+  const routineId = route.name === 'catalog' ? route.routineId : null;
+  const r = store.state.doc.routines.find((x) => x.id === routineId);
+  if (!r) return;
+  const cat = buildCatalog(store.state).find((c) => c.name === normalizeName(t.dataset.name));
+  if (!cat || !cat.catalogId) return;
+  // Default series from the entry's kind, pre-filling weight from the latest
+  // known value for convenience.
+  const prefillW = cat.lastWeight ? cat.lastWeight.value : null;
+  const series = makeSeries(3, cat.kind).map((s) =>
+    cat.kind === 'time' ? s : { ...s, weight: prefillW });
+  const exercise = { id: uid(), catalogId: cat.catalogId, series };
+  store.dispatch(makeCommand('ADD_EXERCISE', { routineId, index: r.exercises.length, exercise }));
+  ui.catalogFilter = '';
+  go(`#/workout/${routineId}/edit/${exercise.id}`);
+};
+
+const seriesStep = (t) => {
+  // +/- the set count from the editor's stepper. Resizes the instance's
+  // series (cloning the last set's values into any new set).
+  const routineId = t.dataset.routine;
+  const exerciseId = t.dataset.exercise;
+  const r = store.state.doc.routines.find((x) => x.id === routineId);
+  const inst = r?.exercises.find((ex) => ex.id === exerciseId);
+  if (!inst) return;
+  const kind = hydrateExercise(store.state, inst).kind;
+  const from = structuredClone(Array.isArray(inst.series) ? inst.series : []);
+  const n = Math.max(1, Math.min(20, from.length + Number(t.dataset.seriesStep)));
+  if (n === from.length) return;
+  store.dispatch(makeCommand('UPDATE_SERIES', { routineId, exerciseId, from, to: resizeSeries(from, n, kind) }));
+};
+
+const deleteCatalog = async (t) => {
+  const cat = buildCatalog(store.state).find((c) => c.name === normalizeName(t.dataset.name));
+  if (!cat || !cat.catalogId) return;
+  const catIdx = (store.state.doc.catalog ?? []).findIndex((c) => c.id === cat.catalogId);
+  if (catIdx < 0) return;
+  // Cascade: capture every routine reference (index + full instance) so the
+  // delete removes them all and undo restores them exactly.
+  const targets = [];
+  store.state.doc.routines.forEach((r) => {
+    r.exercises.forEach((inst, index) => {
+      if (inst.catalogId === cat.catalogId) {
+        targets.push({ routineId: r.id, index, exercise: structuredClone(inst) });
+      }
+    });
+  });
+  const days = [...new Set(cat.usedIn.map((u) => `Día ${dayNum(u.routineIndex)}`))].join(', ');
+  const ok = await confirmModal({
+    title: 'Eliminar ejercicio',
+    message: targets.length
+      ? `Se va a quitar "${cat.displayName}" del catálogo y de ${days}. Las sesiones registradas se mantienen como historial.`
+      : `Se va a quitar "${cat.displayName}" del catálogo. Las sesiones registradas se mantienen como historial.`,
+    confirmLabel: 'Eliminar',
+    cancelLabel: 'Cancelar',
+    destructive: true,
+  });
+  if (!ok) return;
+  const catalogTarget = {
+    id: cat.catalogId,
+    index: catIdx,
+    exercise: structuredClone(store.state.doc.catalog[catIdx]),
+  };
+  store.dispatch(makeCommand('CATALOG_DELETE', { name: cat.displayName, targets, catalogTarget }));
+  // From the exercise-detail edit drawer, return to the catalog list;
+  // from the catalog screen itself, stay put.
+  if (parseRoute().name === 'exercise') go('#/catalog');
+  else render(store.state);
+};
+
+const removeExercise = async (t) => {
+  const routineId = t.dataset.routine;
+  const exerciseId = t.dataset.exercise;
+  const r = store.state.doc.routines.find((x) => x.id === routineId);
+  if (!r) return;
+  const index = r.exercises.findIndex((e) => e.id === exerciseId);
+  if (index < 0) return;
+  const exercise = r.exercises[index];
+  const ok = await confirmModal({
+    title: 'Eliminar ejercicio',
+    message: `Se va a quitar "${exercise.name}" de la rutina.`,
+    confirmLabel: 'Eliminar',
+    cancelLabel: 'Cancelar',
+    destructive: true,
+  });
+  if (!ok) return;
+  store.dispatch(makeCommand('REMOVE_EXERCISE', { routineId, index, exercise }));
+};
+
+const removeRoutine = async (t) => {
+  const routineId = t.dataset.routine;
+  const index = store.state.doc.routines.findIndex((x) => x.id === routineId);
+  if (index < 0) return;
+  const routine = store.state.doc.routines[index];
+  const ok = await confirmModal({
+    title: 'Eliminar rutina',
+    message: `Se va a quitar "${routine.name}" junto con todos sus ejercicios.`,
+    confirmLabel: 'Eliminar',
+    cancelLabel: 'Cancelar',
+    destructive: true,
+  });
+  if (!ok) return;
+  store.dispatch(makeCommand('REMOVE_ROUTINE', { index, routine }));
+  go('#/edit');
+};
+
+const resetToSeed = async () => {
+  if (ui.menuOpen) { ui.menuOpen = false; render(store.state); }
+  const ok = await confirmModal({
+    title: 'Restaurar rutina inicial',
+    message: 'Se van a borrar tus cambios y volver al programa original.',
+    confirmLabel: 'Restaurar',
+    cancelLabel: 'Cancelar',
+    destructive: true,
+  });
+  if (!ok) return;
+  store.reset();
+};
+
+// The click registry. Backdrop taps (.drawer-backdrop) reuse this same table
+// via fire() — see render() — so "close" logic has a single source of truth.
+const clickActions = {
+  'go': (t) => go(t.dataset.go),
+  'done': () => {
     // Context-aware: leave workout-edit mode → normal workout view; else home.
     const route = parseRoute();
-    if (route.name === 'workout' && route.editMode) {
-      go(`#/workout/${route.routineId}`);
-    } else {
-      go('#/');
-    }
-    return;
-  }
-  if (t.hasAttribute('data-edit-exercise')) {
-    const routineId = t.dataset.routine;
-    const exerciseId = t.dataset.exercise;
-    go(`#/workout/${routineId}/edit/${exerciseId}`);
-    return;
-  }
-  if (t.hasAttribute('data-menu')) {
-    menuOpen = true;
-    render(store.state);
-    return;
-  }
-  if (t.hasAttribute('data-stopwatch')) {
-    openStopwatch();
-    return;
-  }
-  if (t.hasAttribute('data-close-stopwatch')) {
-    closeStopwatch();
-    return;
-  }
-  if (t.hasAttribute('data-close-menu')) {
-    menuOpen = false;
-    render(store.state);
-    return;
-  }
-  if (t.hasAttribute('data-add-catalog-exercise')) {
+    if (route.name === 'workout' && route.editMode) go(`#/workout/${route.routineId}`);
+    else go('#/');
+  },
+  'edit-exercise': (t) => go(`#/workout/${t.dataset.routine}/edit/${t.dataset.exercise}`),
+  'menu': () => { ui.menuOpen = true; render(store.state); },
+  'stopwatch': () => openStopwatch(),
+  'close-stopwatch': () => closeStopwatch(),
+  'close-menu': () => { ui.menuOpen = false; render(store.state); },
+  'add-catalog-exercise': (t) => {
     // Open the create form over the catalog screen. A `data-routine` (from
     // pick mode) makes the new exercise also get added to that routine.
-    catalogFormOpen = true;
-    catalogPickRoutineId = t.dataset.routine || null;
+    // `data-prefill` (from an empty-search "Crear …") seeds the name field.
+    ui.catalogFormOpen = true;
+    ui.catalogPickRoutineId = t.dataset.routine || null;
+    ui.catalogFormPrefill = t.dataset.prefill || '';
     render(store.state);
-    return;
-  }
-  if (t.hasAttribute('data-cancel-catalog-form')) {
-    catalogFormOpen = false;
-    catalogPickRoutineId = null;
+  },
+  'clear-search': (t) => {
+    const id = t.dataset.target;
+    if (id === 'build-pick-filter') ui.buildPickFilter = '';
+    else ui.catalogFilter = '';
     render(store.state);
-    return;
-  }
-  if (t.hasAttribute('data-export')) {
-    menuOpen = false;
+    // Keep the field focused so the user can immediately retype.
+    requestAnimationFrame(() => document.getElementById(id)?.focus({ preventScroll: true }));
+  },
+  'cancel-catalog-form': () => {
+    ui.catalogFormOpen = false;
+    ui.catalogPickRoutineId = null;
     render(store.state);
-    await exportConfig();
-    return;
-  }
-  if (t.hasAttribute('data-import')) {
-    menuOpen = false;
-    render(store.state);
-    await importConfig();
-    return;
-  }
-  if (t.hasAttribute('data-close-drawer')) {
+  },
+  'export': async () => { ui.menuOpen = false; render(store.state); await exportConfig(); },
+  'import': async () => { ui.menuOpen = false; render(store.state); await importConfig(); },
+  'close-drawer': () => {
     const route = parseRoute();
     if (route.name === 'build' && route.editExerciseId) {
       go(`#/build/${route.step}`);
     } else if (route.name === 'workout' && route.editExerciseId) {
-      // history.back so we return to whatever route opened the drawer
-      // (edit-routine list, workout normal, workout edit). Fall back to
-      // the normal workout view if we landed here directly.
+      // history.back so we return to whatever route opened the drawer; fall
+      // back to the normal workout view if we landed here directly.
       if (history.length > 1) history.back();
       else go(`#/workout/${route.routineId}`);
     }
-    return;
-  }
-  if (t.hasAttribute('data-undo')) {
-    const cmd = store.undo();
-    if (cmd) showToast(`Deshecho — ${describeCommand(cmd, store.state).toLowerCase()}`);
-    return;
-  }
-  if (t.hasAttribute('data-redo')) {
-    const cmd = store.redo();
-    if (cmd) showToast(`Rehecho — ${describeCommand(cmd, store.state).toLowerCase()}`);
-    return;
-  }
-  if (t.hasAttribute('data-toggle-media')) {
+  },
+  'undo': () => { const cmd = store.undo(); if (cmd) showToast(`Deshecho — ${describeCommand(cmd, store.state).toLowerCase()}`); },
+  'redo': () => { const cmd = store.redo(); if (cmd) showToast(`Rehecho — ${describeCommand(cmd, store.state).toLowerCase()}`); },
+  'toggle-media': (t) => {
     const id = t.dataset.exercise;
-    if (expandedMedia.has(id)) expandedMedia.delete(id);
-    else expandedMedia.add(id);
+    if (ui.expandedMedia.has(id)) ui.expandedMedia.delete(id);
+    else ui.expandedMedia.add(id);
     render(store.state);
-    return;
-  }
-  if (t.hasAttribute('data-toggle-set')) {
-    const exerciseId = t.dataset.exercise;
-    const setIndex = Number(t.dataset.index);
-    const from = t.dataset.from === '1';
-    const date = todayKey();
-    const to = !from;
-    // Snapshot only refreshes on completion (false → true). Toggling off
-    // preserves the existing snapshot so undo behaves predictably.
-    const found = findExerciseInState(store.state, exerciseId);
-    const hx = found ? hydrateExercise(store.state, found.exercise) : null;
-    const fromSnapshot = sessionSnapshot(store.state, date, exerciseId);
-    const snapshot = to && hx
-      ? {
-          name: hx.name,
-          kind: exKind(hx),
-          unit: exUnit(hx),
-          // Full per-set breakdown — history derives weight list + volume.
-          series: structuredClone(exSeries(hx)),
-          routineId: found.routine.id,
-        }
-      : undefined;
-    store.dispatch(makeCommand('TOGGLE_SET', {
-      date, exerciseId, setIndex, from, to,
-      ...(snapshot !== undefined ? { snapshot, fromSnapshot } : {}),
-    }));
-    return;
-  }
-  if (t.hasAttribute('data-clear-sets')) {
-    const date = t.dataset.date;
-    const current = store.state.doc.sessions[date];
-    if (!current || Object.keys(current).length === 0) return;
-    const ok = await confirmModal({
-      title: 'Volver a empezar',
-      message: 'Se van a desmarcar todas las series que completaste hoy. Vas a poder deshacer la acción.',
-      confirmLabel: 'Volver a empezar',
-      cancelLabel: 'Cancelar',
-      destructive: true,
-    });
-    if (!ok) return;
-    store.dispatch(makeCommand('CLEAR_SETS', {
-      date, from: structuredClone(current), to: null,
-    }));
-    return;
-  }
-  if (t.hasAttribute('data-add-routine')) {
-    newRoutineOpen = true;
-    render(store.state);
-    return;
-  }
-  if (t.hasAttribute('data-cancel-new-routine')) {
-    newRoutineOpen = false;
-    render(store.state);
-    return;
-  }
-  if (t.hasAttribute('data-add-exercise')) {
-    // Go to the catalog in pick mode for this routine.
-    const routineId = t.dataset.routine;
-    const r = store.state.doc.routines.find((x) => x.id === routineId);
-    if (!r) return;
-    catalogFilter = '';
-    go(`#/catalog/pick/${routineId}`);
-    return;
-  }
-  if (t.hasAttribute('data-build-finish')) {
-    buildPickOpen = false;
-    buildPickSelected.clear();
+  },
+  'toggle-set': toggleSet,
+  'clear-sets': clearSets,
+  'add-routine': () => { ui.newRoutineOpen = true; render(store.state); },
+  'cancel-new-routine': () => { ui.newRoutineOpen = false; render(store.state); },
+  'add-exercise': addExercise,
+  'build-finish': () => {
+    ui.buildPickOpen = false;
+    ui.buildPickSelected.clear();
     go('#/');
     showToast('Semana guardada 💪');
-    return;
-  }
-  if (t.hasAttribute('data-build-edit')) {
-    go(`#/build/${t.dataset.step}/ex/${t.dataset.exercise}`);
-    return;
-  }
-  if (t.hasAttribute('data-build-add')) {
-    buildPickOpen = true;
-    buildPickSelected.clear();
-    buildPickFilter = '';
+  },
+  'build-edit': (t) => go(`#/build/${t.dataset.step}/ex/${t.dataset.exercise}`),
+  'build-add': () => {
+    ui.buildPickOpen = true;
+    ui.buildPickSelected.clear();
+    ui.buildPickFilter = '';
     render(store.state);
-    return;
-  }
-  if (t.hasAttribute('data-build-pick-cancel')) {
-    buildPickOpen = false;
-    buildPickSelected.clear();
-    buildPickFilter = '';
+  },
+  'build-pick-cancel': () => {
+    ui.buildPickOpen = false;
+    ui.buildPickSelected.clear();
+    ui.buildPickFilter = '';
     render(store.state);
-    return;
-  }
-  if (t.hasAttribute('data-build-pick-toggle')) {
+  },
+  'build-pick-toggle': (t) => {
     const id = t.dataset.catalogId;
-    if (buildPickSelected.has(id)) buildPickSelected.delete(id);
-    else buildPickSelected.add(id);
+    if (ui.buildPickSelected.has(id)) ui.buildPickSelected.delete(id);
+    else ui.buildPickSelected.add(id);
     render(store.state);
-    return;
-  }
-  if (t.hasAttribute('data-build-pick-commit')) {
-    const route = parseRoute();
-    if (route.name !== 'build') return;
-    const routine = store.state.doc.routines[Math.min(route.step, store.state.doc.routines.length - 1)];
-    if (!routine || buildPickSelected.size === 0) return;
-    // Insert one reference per ticked catalog entry, in catalog order.
-    const cat = buildCatalog(store.state).filter((c) => c.catalogId && buildPickSelected.has(c.catalogId));
-    for (const c of cat) {
-      const exercise = instanceFromCatalog(c);
-      store.dispatch(makeCommand('ADD_EXERCISE', {
-        routineId: routine.id, index: routine.exercises.length, exercise,
-      }));
-    }
-    const n = buildPickSelected.size;
-    buildPickOpen = false;
-    buildPickSelected.clear();
-    buildPickFilter = '';
-    render(store.state);
-    showToast(`${n} ${n === 1 ? 'ejercicio agregado' : 'ejercicios agregados'}`);
-    return;
-  }
-  if (t.hasAttribute('data-pick-catalog')) {
-    // Insert a reference to the chosen catalog entry into the pick routine,
-    // then open the new instance's editor to set its series.
-    const route = parseRoute();
-    const routineId = route.name === 'catalog' ? route.routineId : null;
-    const r = store.state.doc.routines.find((x) => x.id === routineId);
-    if (!r) return;
-    const cat = buildCatalog(store.state).find((c) => c.name === normalizeName(t.dataset.name));
-    if (!cat || !cat.catalogId) return;
-    // Default series from the entry's kind, pre-filling weight from the latest
-    // known value for convenience.
-    const prefillW = cat.lastWeight ? cat.lastWeight.value : null;
-    const series = makeSeries(3, cat.kind).map((s) =>
-      cat.kind === 'time' ? s : { ...s, weight: prefillW });
-    const exercise = { id: uid(), catalogId: cat.catalogId, series };
-    store.dispatch(makeCommand('ADD_EXERCISE', {
-      routineId, index: r.exercises.length, exercise,
-    }));
-    catalogFilter = '';
-    go(`#/workout/${routineId}/edit/${exercise.id}`);
-    return;
-  }
-  if (t.hasAttribute('data-close-catalog-edit')) {
+  },
+  'build-pick-commit': buildPickCommit,
+  'pick-catalog': pickCatalog,
+  'close-catalog-edit': () => {
     const route = parseRoute();
     if (route.name === 'exercise' && route.editMode) {
       if (history.length > 1) history.back();
       else go(`#/${route.origin || 'dashboard'}/ex/${route.slug}`);
     }
-    return;
-  }
-  if (t.hasAttribute('data-series-step')) {
-    // +/- the set count from the editor's stepper. Resizes the instance's
-    // series (cloning the last set's values into any new set).
-    const routineId = t.dataset.routine;
-    const exerciseId = t.dataset.exercise;
-    const r = store.state.doc.routines.find((x) => x.id === routineId);
-    const inst = r?.exercises.find((ex) => ex.id === exerciseId);
-    if (!inst) return;
-    const kind = hydrateExercise(store.state, inst).kind;
-    const from = structuredClone(Array.isArray(inst.series) ? inst.series : []);
-    const n = Math.max(1, Math.min(20, from.length + Number(t.dataset.seriesStep)));
-    if (n === from.length) return;
-    store.dispatch(makeCommand('UPDATE_SERIES', {
-      routineId, exerciseId, from, to: resizeSeries(from, n, kind),
-    }));
-    return;
-  }
-  if (t.hasAttribute('data-detail-range')) {
-    const r = t.dataset.detailRange;
-    if (r !== detailRange) {
-      detailRange = r;
-      render(store.state);
-    }
-    return;
-  }
-  if (t.hasAttribute('data-delete-catalog')) {
-    const cat = buildCatalog(store.state).find((c) => c.name === normalizeName(t.dataset.name));
-    if (!cat || !cat.catalogId) return;
-    const catIdx = (store.state.doc.catalog ?? []).findIndex((c) => c.id === cat.catalogId);
-    if (catIdx < 0) return;
-    // Cascade: capture every routine reference (index + full instance) so the
-    // delete removes them all and undo restores them exactly.
-    const targets = [];
-    store.state.doc.routines.forEach((r) => {
-      r.exercises.forEach((inst, index) => {
-        if (inst.catalogId === cat.catalogId) {
-          targets.push({ routineId: r.id, index, exercise: structuredClone(inst) });
-        }
-      });
-    });
-    const days = [...new Set(cat.usedIn.map((u) => `Día ${dayNum(u.routineIndex)}`))].join(', ');
-    const ok = await confirmModal({
-      title: 'Eliminar ejercicio',
-      message: targets.length
-        ? `Se va a quitar "${cat.displayName}" del catálogo y de ${days}. Las sesiones registradas se mantienen como historial.`
-        : `Se va a quitar "${cat.displayName}" del catálogo. Las sesiones registradas se mantienen como historial.`,
-      confirmLabel: 'Eliminar',
-      cancelLabel: 'Cancelar',
-      destructive: true,
-    });
-    if (!ok) return;
-    const catalogTarget = {
-      id: cat.catalogId,
-      index: catIdx,
-      exercise: structuredClone(store.state.doc.catalog[catIdx]),
-    };
-    store.dispatch(makeCommand('CATALOG_DELETE', { name: cat.displayName, targets, catalogTarget }));
-    // From the exercise-detail edit drawer, return to the catalog list;
-    // from the catalog screen itself, stay put.
-    const route = parseRoute();
-    if (route.name === 'exercise') go('#/catalog');
-    else render(store.state);
-    return;
-  }
-  if (t.hasAttribute('data-remove-exercise')) {
-    const routineId = t.dataset.routine;
-    const exerciseId = t.dataset.exercise;
-    const r = store.state.doc.routines.find((x) => x.id === routineId);
-    if (!r) return;
-    const index = r.exercises.findIndex((e) => e.id === exerciseId);
-    if (index < 0) return;
-    const exercise = r.exercises[index];
-    const ok = await confirmModal({
-      title: 'Eliminar ejercicio',
-      message: `Se va a quitar "${exercise.name}" de la rutina.`,
-      confirmLabel: 'Eliminar',
-      cancelLabel: 'Cancelar',
-      destructive: true,
-    });
-    if (!ok) return;
-    store.dispatch(makeCommand('REMOVE_EXERCISE', { routineId, index, exercise }));
-    return;
-  }
-  if (t.hasAttribute('data-remove-routine')) {
-    const routineId = t.dataset.routine;
-    const index = store.state.doc.routines.findIndex((x) => x.id === routineId);
-    if (index < 0) return;
-    const routine = store.state.doc.routines[index];
-    const ok = await confirmModal({
-      title: 'Eliminar rutina',
-      message: `Se va a quitar "${routine.name}" junto con todos sus ejercicios.`,
-      confirmLabel: 'Eliminar',
-      cancelLabel: 'Cancelar',
-      destructive: true,
-    });
-    if (!ok) return;
-    store.dispatch(makeCommand('REMOVE_ROUTINE', { index, routine }));
-    go('#/edit');
-    return;
-  }
-  if (t.hasAttribute('data-reset')) {
-    if (menuOpen) { menuOpen = false; render(store.state); }
-    const ok = await confirmModal({
-      title: 'Restaurar rutina inicial',
-      message: 'Se van a borrar tus cambios y volver al programa original.',
-      confirmLabel: 'Restaurar',
-      cancelLabel: 'Cancelar',
-      destructive: true,
-    });
-    if (!ok) return;
-    store.reset();
-    return;
-  }
+  },
+  'series-step': seriesStep,
+  'detail-range': (t) => {
+    const r = t.dataset.ui.detailRange;
+    if (r !== ui.detailRange) { ui.detailRange = r; render(store.state); }
+  },
+  'delete-catalog': deleteCatalog,
+  'remove-exercise': removeExercise,
+  'remove-routine': removeRoutine,
+  'reset': resetToSeed,
 };
 
-// Live filter for the catalog picker — fires on every keystroke. Not a
-// store mutation, so no command dispatch.
-const onInput = (e) => {
-  const t = e.target;
-  if (t.id === 'catalog-filter') {
-    catalogFilter = t.value;
-    render(store.state);
-  } else if (t.id === 'build-pick-filter') {
-    buildPickFilter = t.value;
-    render(store.state);
-  }
+// Live filters — fire on every keystroke. Not store mutations, so no command
+// dispatch; keyed by input id.
+const inputActions = {
+  'catalog-filter': (t) => { ui.catalogFilter = t.value; render(store.state); },
+  'build-pick-filter': (t) => { ui.buildPickFilter = t.value; render(store.state); },
 };
 
 // Edit one catalog entry's definition field via UPDATE_CATALOG_ENTRY. Because
@@ -2796,13 +2809,13 @@ const dispatchEntryFieldChange = (catalogId, field, value) => {
 // current edit route. On rename the route slug + edit target move to the new
 // name BEFORE dispatching, so the post-dispatch re-render resolves consistently.
 const dispatchCatalogFieldChange = (field, value) => {
-  if (!catalogEditName) return;
-  const entry = (store.state.doc.catalog || []).find((c) => normalizeName(c.name) === catalogEditName);
+  if (!ui.catalogEditName) return;
+  const entry = (store.state.doc.catalog || []).find((c) => normalizeName(c.name) === ui.catalogEditName);
   if (!entry) return;
   if (field === 'name') {
     const trimmed = String(value).trim();
     if (!trimmed || trimmed === entry.name) return;
-    catalogEditName = normalizeName(trimmed);
+    ui.catalogEditName = normalizeName(trimmed);
     const route = parseRoute();
     if (route.name === 'exercise' && route.editMode) {
       history.replaceState(null, '', `#/${route.origin || 'dashboard'}/ex/${slugify(trimmed)}/edit`);
@@ -2811,30 +2824,24 @@ const dispatchCatalogFieldChange = (field, value) => {
   dispatchEntryFieldChange(entry.id, field, value);
 };
 
-// Field updates dispatch on `change` (blur / Enter), not per-keystroke,
-// to avoid one command per character.
-const onChange = (e) => {
-  const t = e.target;
-
-  if (t.matches('[data-cat-update]')) {
+// Field updates dispatch on `change` (blur / Enter), not per-keystroke, to
+// avoid one command per character. Keyed by attribute.
+const changeActions = {
+  'data-cat-update': (t) => {
     const field = t.name;
     let value = t.value;
     if (field === 'video') value = String(value).trim() || null;
     dispatchCatalogFieldChange(field, value);
-    return;
-  }
-
-  if (t.matches('[data-rename-routine]')) {
+  },
+  'data-rename-routine': (t) => {
     const routineId = t.dataset.routine;
     const r = store.state.doc.routines.find((x) => x.id === routineId);
     if (!r) return;
     const to = t.value.trim();
     if (!to || to === r.name) return;
     store.dispatch(makeCommand('RENAME_ROUTINE', { routineId, from: r.name, to }));
-    return;
-  }
-
-  if (t.matches('[data-update]')) {
+  },
+  'data-update': (t) => {
     const routineId = t.dataset.routine;
     const exerciseId = t.dataset.exercise;
     const r = store.state.doc.routines.find((x) => x.id === routineId);
@@ -2870,13 +2877,13 @@ const onChange = (e) => {
     }
     if (JSON.stringify(from) === JSON.stringify(to)) return;
     store.dispatch(makeCommand('UPDATE_SERIES', { routineId, exerciseId, from, to }));
-    return;
-  }
+  },
 };
 
-// Form submit: the new-routine and new-catalog-exercise drawers use <form>.
-const onSubmit = (e) => {
-  if (e.target.id === 'catalog-form') {
+// Form submits — keyed by form id. The new-routine and new-catalog-exercise
+// drawers use <form>.
+const submitActions = {
+  'catalog-form': (form, e) => {
     e.preventDefault();
     const nameEl = document.getElementById('cat-form-name');
     const name = (nameEl?.value ?? '').trim();
@@ -2885,7 +2892,7 @@ const onSubmit = (e) => {
     const category = normCategory(document.getElementById('cat-form-category')?.value);
     const video = (document.getElementById('cat-form-video')?.value ?? '').trim() || null;
     const notes = (document.getElementById('cat-form-notes')?.value ?? '').trim();
-    const pickRoutineId = catalogPickRoutineId;
+    const pickRoutineId = ui.catalogPickRoutineId;
 
     // The catalog is unique by normalized name — reuse a matching entry instead
     // of creating a duplicate; otherwise create one.
@@ -2903,8 +2910,8 @@ const onSubmit = (e) => {
     if (pickRoutineId) {
       // Created from pick mode: also add a reference to the routine, then edit
       // the new instance to set its series.
-      catalogFormOpen = false;
-      catalogPickRoutineId = null;
+      ui.catalogFormOpen = false;
+      ui.catalogPickRoutineId = null;
       const r = store.state.doc.routines.find((x) => x.id === pickRoutineId);
       if (r) {
         const exercise = { id: uid(), catalogId: entry.id, series: makeSeries(3, entry.kind) };
@@ -2920,22 +2927,20 @@ const onSubmit = (e) => {
 
     // "another" keeps the form open (blank, re-focused) to keep adding;
     // "close" closes it, revealing the new exercise on the catalog screen.
-    catalogFormOpen = e.submitter?.dataset.catalogFormSubmit === 'another';
+    ui.catalogFormOpen = e.submitter?.dataset.catalogFormSubmit === 'another';
     render(store.state);
-    return;
-  }
-  if (e.target.id !== 'new-routine-form') return;
-  e.preventDefault();
-  const input = document.getElementById('new-routine-name');
-  const name = (input?.value ?? '').trim();
-  if (!name) { input?.focus(); return; }
-  const routine = { id: uid(), name, exercises: [] };
-  store.dispatch(makeCommand('ADD_ROUTINE', {
-    index: store.state.doc.routines.length, routine,
-  }));
-  newRoutineOpen = false;
-  render(store.state);
-  showToast(`Rutina "${name}" creada`);
+  },
+  'new-routine-form': (form, e) => {
+    e.preventDefault();
+    const input = document.getElementById('new-routine-name');
+    const name = (input?.value ?? '').trim();
+    if (!name) { input?.focus(); return; }
+    const routine = { id: uid(), name, exercises: [] };
+    store.dispatch(makeCommand('ADD_ROUTINE', { index: store.state.doc.routines.length, routine }));
+    ui.newRoutineOpen = false;
+    render(store.state);
+    showToast(`Rutina "${name}" creada`);
+  },
 };
 
 const isEditableTarget = (e) => {
@@ -2967,26 +2972,14 @@ const start = async () => {
   await initQuotes();
   store.subscribe(() => render(store.state));
   window.addEventListener('hashchange', () => {
-    menuOpen = false;
-    newRoutineOpen = false;
-    catalogFormOpen = false;
-    catalogPickRoutineId = null;
-    catalogFilter = '';
-    catalogEditName = null;
-    detailRange = '30d';
-    buildPickOpen = false;
-    buildPickSelected.clear();
-    buildPickFilter = '';
-    if (stopwatchTimer) { clearInterval(stopwatchTimer); stopwatchTimer = null; }
-    releaseWakeLock();
-    stopwatchOpen = false;
+    resetTransient();
     render(store.state);
   });
   window.addEventListener('click', onClick);
-  window.addEventListener('change', onChange);
-  window.addEventListener('input', onInput);
+  delegate('change', changeActions);
+  delegateById('input', inputActions);
+  delegateById('submit', submitActions);
   window.addEventListener('keydown', onKeyDown);
-  window.addEventListener('submit', onSubmit);
   render(store.state);
 };
 

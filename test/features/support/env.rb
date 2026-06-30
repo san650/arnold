@@ -124,6 +124,11 @@ module AppWorld
     @page.query_selector_all(selector).length
   end
 
+  # CSS selector for a stable test hook emitted by the app's `dataTest(id)`.
+  def data_test(value)
+    %([data-test-id="#{value}"])
+  end
+
   def visible?(selector)
     !@page.query_selector(selector).nil?
   end
@@ -167,6 +172,49 @@ module AppWorld
     return false unless r
     ids = doc['catalog'].select { |c| c['name'] == exercise_name }.map { |c| c['id'] }
     r['exercises'].any? { |e| ids.include?(e['catalogId']) }
+  end
+
+  # Display name of the exercise at a position in a routine (resolved through
+  # the catalog, since routines only store `catalogId`).
+  def exercise_name_at(doc, routine_id, index)
+    r = routine(doc, routine_id)
+    inst = r && r['exercises'][index]
+    return nil unless inst
+    entry = doc['catalog'].find { |c| c['id'] == inst['catalogId'] }
+    entry && entry['name']
+  end
+
+  # Per-instance series of the exercise at a position in a routine.
+  def series_at(doc, routine_id, index)
+    r = routine(doc, routine_id)
+    inst = r && r['exercises'][index]
+    inst && inst['series']
+  end
+
+  # Total completed sets across every session (the "done" count the UI shows).
+  def completed_sets(doc)
+    (doc['sessions'] || {}).values.sum do |day|
+      day.values.sum { |e| (e['sets'] || []).count { |s| s } }
+    end
+  end
+
+  # Drive the app's pointer-based drag-sort: press the drag handle of the row at
+  # `from`, move past the target row's midpoint, and release. Works on any
+  # [data-reorder-list]; rows are [data-reorder-index="N"].
+  def reorder(list_selector, from, to)
+    handle = @page.query_selector(%(#{list_selector} [data-reorder-index="#{from}"] [data-drag-handle]))
+    target = @page.query_selector(%(#{list_selector} [data-reorder-index="#{to}"]))
+    hb = handle.bounding_box
+    tb = target.bounding_box
+    sx = hb['x'] + hb['width'] / 2
+    sy = hb['y'] + hb['height'] / 2
+    # Land past the target's midpoint so the handler picks the new slot.
+    ty = to > from ? tb['y'] + tb['height'] * 0.75 : tb['y'] + tb['height'] * 0.25
+    @page.mouse.move(sx, sy)
+    @page.mouse.down
+    @page.mouse.move(sx, (sy + ty) / 2, steps: 5)
+    @page.mouse.move(sx, ty, steps: 5)
+    @page.mouse.up
   end
 
   # Persistence is async after a dispatch — poll the doc until `block` holds

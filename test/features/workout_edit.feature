@@ -1,16 +1,42 @@
+@workout
 Feature: Editing a routine's exercises
   As a lifter
-  I want to add and remove exercises in a routine
+  I want to add, remove, reorder, and tune the exercises in a routine
+
+  Background:
+    Given I open the routine editor for "day1"
 
   Scenario: Adding an exercise from the catalog
-    Given I open the routine editor for "day1"
-    When I tap the add-exercise button
-    And I pick "Peso muerto con barra" from the catalog
+    When I add the exercise "Peso muerto con barra" to the routine
     Then routine "day1" should reference "Peso muerto con barra" in storage
     And routine "day1" should have 6 exercises in storage
 
   Scenario: Removing an exercise
-    Given I open the routine editor for "day1"
     When I remove the first exercise
     And I confirm the dialog
     Then routine "day1" should have 4 exercises in storage
+
+  Scenario: Reordering exercises
+    When I move the first exercise below the second
+    Then exercise 1 of routine "day1" should be "Press militar con barra" in storage
+    And exercise 2 of routine "day1" should be "Press de banca con barra" in storage
+
+  Scenario: Editing a set's weight and reps
+    When I open the editor for the first exercise
+    And I set the first series to "60" by "8"
+    Then the first series of routine "day1" should be "60" by "8" in storage
+
+  Scenario Outline: Adjusting the number of series
+    When I open the editor for the first exercise
+    And I change the series count by <delta>
+    Then exercise 1 of routine "day1" should have <count> series in storage
+
+    Examples:
+      | delta | count |
+      |     1 |     4 |
+      |    -1 |     2 |
+
+  Scenario: Switching an exercise to a timed type
+    When I open the editor for the first exercise
+    And I change the exercise type to "time"
+    Then the first series of routine "day1" should have a duration in storage

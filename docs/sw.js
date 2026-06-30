@@ -1,5 +1,6 @@
-const VERSION = 'v18';
-const CACHE = `arnold-${VERSION}`;
+const VERSION = 'v21';
+const CACHE_NAME = 'arnold';
+const CACHE = `${CACHE_NAME}-${VERSION}`;
 
 const SHELL = [
   './',
@@ -28,16 +29,28 @@ const SHELL = [
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting())
+    caches.open(CACHE)
+      // cache: 'reload' bypasses the browser HTTP cache so a version bump
+      // never re-precaches a stale file from GitHub Pages' max-age=600.
+      .then((c) => c.addAll(SHELL.map((url) => new Request(url, { cache: 'reload' }))))
+      .then(() => self.skipWaiting())
   );
 });
 
 self.addEventListener('activate', (event) => {
-  event.waitUntil(
-    caches.keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
-      .then(() => self.clients.claim())
-  );
+  event.waitUntil((async () => {
+    const keys = await caches.keys();
+    const oldKeys = keys.filter((k) => k.startsWith(CACHE_NAME + '-') && k !== CACHE);
+    const wasUpdate = oldKeys.length > 0; // any leftover shell cache => this is an upgrade
+    await Promise.all(oldKeys.map((k) => caches.delete(k)));
+    await self.clients.claim();
+    // On an upgrade, tell live clients to reload so they pick up the new
+    // shell on this launch instead of the next one (the two-reload problem).
+    if (wasUpdate) {
+      const clients = await self.clients.matchAll({ type: 'window' });
+      clients.forEach((c) => c.postMessage({ type: 'RELOAD' }));
+    }
+  })());
 });
 
 self.addEventListener('message', (event) => {
@@ -55,9 +68,11 @@ self.addEventListener('fetch', (event) => {
     caches.match(req).then((cached) => {
       if (cached) return cached;
       return fetch(req).then((res) => {
-        if (res.ok) {
+        // Gate on a successful same-origin response so a 404/5xx/opaque
+        // response never poisons the cache for future requests.
+        if (res.ok && res.type === 'basic') {
           const copy = res.clone();
-          caches.open(CACHE).then((c) => c.put(req, copy));
+          caches.open(CACHE).then((c) => c.put(req, copy)).catch(() => {});
         }
         return res;
       }).catch(() => cached);
