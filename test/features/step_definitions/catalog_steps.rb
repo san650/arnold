@@ -1,17 +1,20 @@
 # Catalog screen --------------------------------------------------------------
+#
+# Selectors prefer stable `[data-test-id=...]` hooks over structural CSS so the
+# tests don't break when the markup is restyled or reorganized.
 
 When('I enter catalog edit mode') do
   click('[data-go="#/catalog/edit"]')
-  wait_for('.catalog-manage-row')
+  wait_for('[data-test-id="catalog-delete"]')
 end
 
 When('I search the catalog for {string}') do |query|
-  @page.fill('#catalog-filter', query) # filter listens on `input`
+  @page.fill('[data-test-id="catalog-search"]', query) # filter listens on `input`
 end
 
 When('I open the exercise {string}') do |name|
   @page.get_by_text(name, exact: true).first.click
-  wait_for('.session-list, .detail-chart-wrap, .detail-chart-empty')
+  wait_for('[data-test-id="exercise-detail"]')
 end
 
 When('I tap the edit button') do
@@ -20,11 +23,11 @@ When('I tap the edit button') do
 end
 
 When('I create a catalog exercise named {string}') do |name|
-  click('.fab[data-add-catalog-exercise]')
-  wait_for('#catalog-form')
+  click('[data-test-id="catalog-create"]')
+  wait_for('[data-test-id="catalog-form"]')
   @page.fill('#cat-form-name', name)
   click('[data-catalog-form-submit="close"]')
-  wait_for('.catalog-list')
+  wait_for('[data-test-id="catalog-item"]')
 end
 
 When('I rename the catalog exercise {string} to {string}') do |old_name, new_name|
@@ -47,15 +50,15 @@ end
 
 When('I pick {string} from the catalog') do |name|
   click("[data-pick-catalog][data-name=\"#{name}\"]")
-  wait_for('.drawer')
+  wait_for('[data-test-id="editor-drawer"]')
 end
 
 # Assertions ------------------------------------------------------------------
 
 Then('the catalog should list {int} exercises') do |n|
   ok = false
-  20.times { (ok = count('.catalog-list > li') == n) ? break : sleep(0.1) }
-  expect(count('.catalog-list > li')).to eq(n)
+  20.times { (ok = count('[data-test-id="catalog-item"]') == n) ? break : sleep(0.1) }
+  expect(count('[data-test-id="catalog-item"]')).to eq(n)
 end
 
 Then('the catalog should contain {string} in storage') do |name|

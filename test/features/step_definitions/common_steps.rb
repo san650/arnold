@@ -6,11 +6,11 @@ Given('I open the catalog') { open_app('#/catalog') }
 Given('I open the progress screen') { open_app('#/dashboard') }
 Given('I open the routines editor') do
   open_app('#/edit')
-  wait_for('.edit-list')
+  wait_for('[data-test-id="routines-editor"]')
 end
 Given('I open the routine editor for {string}') do |routine_id|
   open_app("#/workout/#{routine_id}/edit")
-  wait_for('.exercise, .empty-state')
+  wait_for('[data-test-id="exercise-card"], .empty-state')
 end
 Given('I open the routine {string}') do |name|
   open_app('')
@@ -53,5 +53,5 @@ Then('the dialog should mention {string}') do |text|
 end
 
 Then('I should see {int} routines') do |n|
-  expect(count('.routine-card')).to eq(n)
+  expect(count('[data-test-id="routine-card"]')).to eq(n)
 end

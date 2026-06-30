@@ -7,6 +7,6 @@ Feature: Undo and redo
     When I rename the routine "day1" to "Cambiado"
     Then routine "day1" should be named "Cambiado"
     When I undo
-    Then routine "day1" should be named "Día 1: Tren Superior (Empuje)"
+    Then routine "day1" should be named "Tren Superior (Empuje)"
     When I redo
     Then routine "day1" should be named "Cambiado"

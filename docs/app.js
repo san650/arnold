@@ -223,6 +223,12 @@ let catalogFormOpen = false;
 let catalogPickRoutineId = null;
 // Catalog screen search filter text. Reset on hashchange.
 let catalogFilter = '';
+// Transient: the guided week builder's multi-select picker sheet (slides up
+// over a build step). `buildPickSelected` holds the catalogIds ticked so far;
+// `buildPickFilter` is its search box. All reset on hashchange.
+let buildPickOpen = false;
+const buildPickSelected = new Set();
+let buildPickFilter = '';
 // Transient: which catalog entry the edit drawer targets (normalized name),
 // kept in sync with the exercise-detail edit route.
 let catalogEditName = null;
@@ -383,6 +389,7 @@ const hydrateExercise = (state, inst) => {
     id: inst.id,
     catalogId: inst.catalogId,
     name: def.name ?? '',
+    category: def.category ?? null,
     kind: def.kind === 'time' ? 'time' : 'reps',
     unit: def.unit === 'lb' ? 'lb' : 'kg',
     video: def.video ?? null,
@@ -650,6 +657,12 @@ const parseRoute = () => {
     return r;
   }
   if (parts[0] === 'edit') return { name: 'edit' };
+  if (parts[0] === 'build') {
+    const step = Math.max(0, Math.min(11, Number(parts[1]) || 0));
+    const r = { name: 'build', step };
+    if (parts[2] === 'ex' && parts[3]) r.editExerciseId = parts[3];
+    return r;
+  }
   if (parts[0] === 'log') return { name: 'log' };
   if (parts[0] === 'motivation') return { name: 'motivation' };
   if (parts[0] === 'catalog') {
@@ -726,10 +739,6 @@ const logoSvg = `
 const DAY_WORDS = ['Uno', 'Dos', 'Tres', 'Cuatro', 'Cinco', 'Seis', 'Siete', 'Ocho', 'Nueve', 'Diez', 'Once', 'Doce'];
 const dayWord = (i) => DAY_WORDS[i] ?? String(i + 1);
 const dayNum = (i) => String(i + 1).padStart(2, '0');
-const displayName = (raw) => {
-  const idx = raw.indexOf(':');
-  return (idx >= 0 ? raw.slice(idx + 1).trim() : raw);
-};
 
 // Daily motivational quotes. Loaded from /quotes.json, cached in IndexedDB.
 // Cache invalidates when the file's raw text differs from the cached copy.
@@ -805,12 +814,12 @@ const renderHome = (state) => {
         <span class="progress-num">${String(done).padStart(2, '0')} / ${String(total).padStart(2, '0')}</span>
       `;
     return `
-      <button class="routine-card ${isRest ? 'rest' : ''} ${active ? 'active' : ''}" data-go="#/workout/${esc(r.id)}">
+      <button class="routine-card ${isRest ? 'rest' : ''} ${active ? 'active' : ''}" data-test-id="routine-card" data-go="#/workout/${esc(r.id)}">
         <div class="rc-row1">
           <span class="rc-badge">${dayNum(i)}</span>
           <div class="rc-title">
             <span class="rc-eyebrow">Día ${esc(dayWord(i))}</span>
-            ${esc(displayName(r.name))}
+            ${esc(r.name)}
           </div>
           <span class="rc-chev" aria-hidden="true">›</span>
         </div>
@@ -906,7 +915,7 @@ const renderNewRoutineSheet = () => `
       <div class="field">
         <label for="new-routine-name">Nombre</label>
         <input type="text" id="new-routine-name" name="name"
-               placeholder="Día 8: Cardio" maxlength="80"
+               placeholder="Cardio y core" maxlength="80"
                autocomplete="off" />
       </div>
       <div class="bottom-action">
@@ -928,11 +937,17 @@ const renderCatalogFormSheet = () => `
       <h3>Crear ejercicio</h3>
       <button class="icon-btn" data-cancel-catalog-form aria-label="Cerrar">✕</button>
     </div>
-    <form class="drawer-body" id="catalog-form" autocomplete="off">
+    <form class="drawer-body" id="catalog-form" data-test-id="catalog-form" autocomplete="off">
       <div class="field">
         <label for="cat-form-name">Nombre</label>
         <input type="text" id="cat-form-name" name="name" maxlength="80"
                placeholder="Press de banca con barra" autocomplete="off" />
+      </div>
+      <div class="field">
+        <label for="cat-form-category">Grupo muscular</label>
+        <select id="cat-form-category" name="category">
+          ${CATEGORY_ORDER.map((k) => `<option value="${k}">${esc(CATEGORIES[k].label)}</option>`).join('')}
+        </select>
       </div>
       <div class="field">
         <label for="cat-form-kind">Tipo</label>
@@ -1109,29 +1124,31 @@ const renderWorkout = (state, routineId, editExerciseId, editMode = false) => {
         const setCount = series.length;
         const unit = exUnit(ex);
         const doneCount = arr.slice(0, setCount).filter(Boolean).length;
+        // Each set is one tap-to-complete row: a check, "Serie N", and the
+        // target (weight × reps, or duration). The whole row is the toggle.
         const sets = series.map((s, i) => {
           const done = !!arr[i];
-          const btn = `<button class="set-btn ${done ? 'done' : ''}"
+          let target;
+          if (kind === 'time') {
+            target = s.duration ? esc(s.duration) : '—';
+          } else {
+            const w = numOrNull(s.weight), r = numOrNull(s.reps);
+            const wPart = w != null ? `${w} <span class="u">${esc(unit)}</span>` : '—';
+            const rPart = r != null ? `${r}` : '—';
+            target = (w != null || r != null) ? `${wPart} <span class="x">×</span> ${rPart}` : '—';
+          }
+          return `<button class="set-line ${done ? 'done' : ''}"
+                          data-test-id="set-toggle"
                           data-toggle-set
                           data-exercise="${esc(ex.id)}"
                           data-index="${i}"
                           data-from="${done ? '1' : '0'}"
                           aria-pressed="${done}"
                           aria-label="Serie ${i + 1}">
-                    <span class="lbl">Serie</span>
-                    <span class="n">${i + 1}</span>
+                    <span class="set-check" aria-hidden="true"></span>
+                    <span class="set-line-label">Serie ${i + 1}</span>
+                    <span class="set-line-target">${target}</span>
                   </button>`;
-          // Per-set target beneath the button (read-only — edited in the editor).
-          let sub;
-          if (kind === 'time') {
-            sub = s.duration ? esc(s.duration) : '—';
-          } else {
-            const w = numOrNull(s.weight), r = numOrNull(s.reps);
-            sub = (w != null || r != null) ? `${w ?? '—'}×${r ?? '—'}` : '—';
-          }
-          return `<div class="set-row">${btn}
-                    <span class="set-weight">${sub}</span>
-                  </div>`;
         }).join('');
 
         // reps → weight list + total volume; time → duration.
@@ -1198,7 +1215,7 @@ const renderWorkout = (state, routineId, editExerciseId, editMode = false) => {
           </button>
         ` : '';
         return `
-          <article class="exercise ${complete ? 'complete' : ''}"${editMode ? ` data-reorder-index="${exIndex}"` : ''}>
+          <article class="exercise ${complete ? 'complete' : ''}" data-test-id="exercise-card"${editMode ? ` data-reorder-index="${exIndex}"` : ''}>
             <div class="ex-head">
               ${dragHandle}
               <h3>${esc(ex.name)}</h3>
@@ -1229,7 +1246,7 @@ const renderWorkout = (state, routineId, editExerciseId, editMode = false) => {
     <header class="workout-bar">
       ${backBtn('#/')}
       <div class="title-block">
-        <div class="title">${esc(displayName(routine.name))}</div>
+        <div class="title">${esc(routine.name)}</div>
         <div class="sub">Día ${dayNum(num)} · ${String(done).padStart(2, '0')} / ${String(total).padStart(2, '0')} series</div>
       </div>
       <span></span>
@@ -1278,7 +1295,7 @@ const renderDrawer = (routine, ex) => {
   const unit = exUnit(ex);
   return `
     <div class="drawer-backdrop" data-close-drawer></div>
-    <aside class="drawer" role="dialog" aria-modal="true" aria-label="Editar ejercicio">
+    <aside class="drawer" data-test-id="editor-drawer" role="dialog" aria-modal="true" aria-label="Editar ejercicio">
       <div class="drawer-handle" aria-hidden="true"></div>
       <div class="drawer-header">
         <h3>Editar ejercicio</h3>
@@ -1290,19 +1307,31 @@ const renderDrawer = (routine, ex) => {
           <input type="text" data-update name="name" value="${esc(ex.name)}"
                  data-routine="${esc(routine.id)}" data-exercise="${esc(ex.id)}" />
         </div>
-        <div class="field">
-          <label>Tipo</label>
-          <select data-update name="kind"
-                  data-routine="${esc(routine.id)}" data-exercise="${esc(ex.id)}">
-            <option value="reps" ${exKind(ex) === 'reps' ? 'selected' : ''}>Repeticiones</option>
-            <option value="time" ${exKind(ex) === 'time' ? 'selected' : ''}>Tiempo (cardio)</option>
-          </select>
+        <div class="field-2col">
+          <div class="field">
+            <label>Tipo</label>
+            <select data-update name="kind"
+                    data-routine="${esc(routine.id)}" data-exercise="${esc(ex.id)}">
+              <option value="reps" ${exKind(ex) === 'reps' ? 'selected' : ''}>Repeticiones</option>
+              <option value="time" ${exKind(ex) === 'time' ? 'selected' : ''}>Tiempo (cardio)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Grupo muscular</label>
+            ${categorySelect(ex.category, `data-update data-routine="${esc(routine.id)}" data-exercise="${esc(ex.id)}"`)}
+          </div>
         </div>
         <div class="field">
           <label>Series</label>
-          <input type="number" min="1" max="20" inputmode="numeric"
-                 data-update name="series-count" value="${series.length}"
-                 data-routine="${esc(routine.id)}" data-exercise="${esc(ex.id)}" />
+          <div class="series-stepper" role="group" aria-label="Cantidad de series">
+            <button type="button" class="step-btn" data-series-step="-1"
+                    data-routine="${esc(routine.id)}" data-exercise="${esc(ex.id)}"
+                    aria-label="Quitar una serie" ${series.length <= 1 ? 'disabled' : ''}>−</button>
+            <span class="step-count" aria-live="polite">${series.length}</span>
+            <button type="button" class="step-btn" data-series-step="1"
+                    data-routine="${esc(routine.id)}" data-exercise="${esc(ex.id)}"
+                    aria-label="Agregar una serie" ${series.length >= 20 ? 'disabled' : ''}>+</button>
+          </div>
         </div>
         ${kind === 'time' ? `
         <div class="field">
@@ -1315,25 +1344,31 @@ const renderDrawer = (routine, ex) => {
         <div class="field">
           <div class="series-weights-head">
             <label>Peso × reps por serie</label>
-            <select data-update name="unit"
+            <select class="unit-select" data-update name="unit"
                     data-routine="${esc(routine.id)}" data-exercise="${esc(ex.id)}">
               <option value="kg" ${unit === 'kg' ? 'selected' : ''}>kg</option>
               <option value="lb" ${unit === 'lb' ? 'selected' : ''}>lb</option>
             </select>
           </div>
-          <div class="series-table">
+          <div class="series-grid">
             ${series.map((s, i) => `
               <div class="series-row">
-                <span class="series-row-label">Serie ${i + 1}</span>
-                <input type="number" inputmode="decimal" step="0.5" class="series-weight-input"
-                       data-update name="series-weight" data-set-index="${i}"
-                       data-routine="${esc(routine.id)}" data-exercise="${esc(ex.id)}"
-                       value="${esc(s.weight ?? '')}" placeholder="peso" aria-label="Peso serie ${i + 1}" />
+                <span class="series-row-num">${i + 1}</span>
+                <div class="series-input-wrap">
+                  <input type="number" inputmode="decimal" step="0.5" class="series-weight-input"
+                         data-update name="series-weight" data-set-index="${i}"
+                         data-routine="${esc(routine.id)}" data-exercise="${esc(ex.id)}"
+                         value="${esc(s.weight ?? '')}" placeholder="—" aria-label="Peso serie ${i + 1}" />
+                  <span class="series-input-unit">${esc(unit)}</span>
+                </div>
                 <span class="series-row-x" aria-hidden="true">×</span>
-                <input type="number" inputmode="numeric" step="1" min="0" class="series-reps-input"
-                       data-update name="series-reps" data-set-index="${i}"
-                       data-routine="${esc(routine.id)}" data-exercise="${esc(ex.id)}"
-                       value="${esc(s.reps ?? '')}" placeholder="reps" aria-label="Reps serie ${i + 1}" />
+                <div class="series-input-wrap">
+                  <input type="number" inputmode="numeric" step="1" min="0" class="series-reps-input"
+                         data-update name="series-reps" data-set-index="${i}"
+                         data-routine="${esc(routine.id)}" data-exercise="${esc(ex.id)}"
+                         value="${esc(s.reps ?? '')}" placeholder="—" aria-label="Reps serie ${i + 1}" />
+                  <span class="series-input-unit">reps</span>
+                </div>
               </div>`).join('')}
           </div>
         </div>
@@ -1630,7 +1665,7 @@ const renderExerciseDetail = (state, slug, editMode, origin = 'dashboard') => {
         <button class="range-opt ${detailRange === 'all' ? 'on' : ''}" data-detail-range="all" role="tab" aria-selected="${detailRange === 'all'}">Todo</button>
       </div>
     </div>
-    <div class="detail-chart-wrap">${renderBarChart(all, detailKind)}</div>
+    <div class="detail-chart-wrap" data-test-id="exercise-detail">${renderBarChart(all, detailKind)}</div>
 
     <div class="section">
       <span class="label">Sesiones</span>
@@ -1651,12 +1686,78 @@ const renderExerciseDetail = (state, slug, editMode, origin = 'dashboard') => {
 //   'edit' — add / edit / delete exercises (entered via the "Editar" button)
 //   'pick' — choose an exercise to insert into `routineId`, then return to the
 //            workout editor (reached from the workout-edit FAB)
-const catalogRowMeta = (c) => {
-  const usedLabels = c.usedIn.map((u) => `Día ${dayNum(u.routineIndex)}`).join(' + ');
-  return c.lastDate
-    ? `${c.sessionCount} ${c.sessionCount === 1 ? 'sesión' : 'sesiones'}${usedLabels ? ` · ${usedLabels}` : ''}`
-    : (usedLabels || 'sin uso aún');
+// ---------- Exercise categories ----------
+// The muscle group is an explicit field the user picks when creating/editing an
+// exercise (CATEGORIES below). It groups and color-codes the catalog so a long
+// flat list reads as a real library. For entries that predate the field (old
+// imports), `categoryOf` falls back to a keyword guess so they still land
+// somewhere sensible; the rule order resolves overlaps — "remo al mentón" is a
+// shoulder move even though it says "remo"; "curl femoral" is legs not arms.
+const iconDumbbell = `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 8v8M8 6v12M16 6v12M19 8v8M8 12h8"/></svg>`;
+const iconClock = `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="13" r="7"/><path d="M12 10.5V13l1.8 1.2"/><path d="M9.5 3.5h5"/></svg>`;
+
+const CATEGORIES = {
+  pecho:   { label: 'Pecho',   color: '#f0683c' },
+  espalda: { label: 'Espalda', color: '#37b6a6' },
+  hombros: { label: 'Hombros', color: '#e8a13a' },
+  piernas: { label: 'Piernas', color: '#9b86f3' },
+  brazos:  { label: 'Brazos',  color: '#4d9bf0' },
+  core:    { label: 'Core',    color: '#5bbf6a' },
+  otros:   { label: 'Otros',   color: '#8d96a4' },
 };
+const CATEGORY_ORDER = ['pecho', 'espalda', 'hombros', 'piernas', 'brazos', 'core', 'otros'];
+const CATEGORY_RULES = [
+  ['hombros', /militar|hombro|lateral|ment[oó]n|upright|deltoid|shoulder|overhead/],
+  ['espalda', /peso muerto|remo|jal[oó]n|dominad|espalda|dorsal|pulldown|deadlift|\brow\b|\blat\b/],
+  ['piernas', /sentadilla|pierna|prensa|cu[aá]driceps|tal[oó]n|calf|gl[uú]teo|femoral|hamstring|b[uú]lgar|\bleg\b|squat|quad/],
+  ['brazos',  /curl|b[ií]ceps|tr[ií]ceps|franc[eé]s|bicep|tricep/],
+  ['pecho',   /banca|pecho|inclinad|apertura|bench|chest|\bfly\b/],
+  ['core',    /plancha|abdominal|plank|core|crunch|cardio|oblicuo/],
+];
+const VALID_CATEGORY = new Set(CATEGORY_ORDER);
+// Resolve a catalog row's group: the stored field wins; legacy entries without
+// one fall back to a keyword guess.
+const categoryOf = (c) => {
+  const explicit = c.template?.category ?? c.category;
+  if (explicit && VALID_CATEGORY.has(explicit)) return explicit;
+  const hay = `${c.displayName} ${c.template?.notes ?? ''}`.toLowerCase();
+  for (const [key, re] of CATEGORY_RULES) if (re.test(hay)) return key;
+  return c.kind === 'time' ? 'core' : 'otros';
+};
+// Normalize any raw category string to a valid key (used when storing).
+const normCategory = (v) => (VALID_CATEGORY.has(v) ? v : 'otros');
+const categoryTile = (catKey, kind) => {
+  const cat = CATEGORIES[catKey] || CATEGORIES.otros;
+  return `<span class="cat-tile" style="--cat:${cat.color}">${kind === 'time' ? iconClock : iconDumbbell}</span>`;
+};
+// A <select> of muscle groups, pre-selected to `selected`. Extra attrs (e.g.
+// data-cat-update / data-update + ids) are passed through verbatim.
+const categorySelect = (selected, attrs = '') => `
+  <select name="category" ${attrs}>
+    ${CATEGORY_ORDER.map((k) => `<option value="${k}" ${normCategory(selected) === k ? 'selected' : ''}>${esc(CATEGORIES[k].label)}</option>`).join('')}
+  </select>`;
+
+// Secondary line of small chips: routine usage (kept in the "Día 02 + Día 05"
+// format), last lifted weight (only when one exists), session count, and an
+// in-routine marker for pick mode.
+const catalogChips = (c, { inRoutine = false } = {}) => {
+  const chips = [];
+  if (inRoutine) chips.push(`<span class="cat-chip in">✓ En la rutina</span>`);
+  const used = c.usedIn.map((u) => `Día ${dayNum(u.routineIndex)}`).join(' + ');
+  if (used) chips.push(`<span class="cat-chip">${esc(used)}</span>`);
+  const w = fmtWeight(c.lastWeight);
+  if (w) chips.push(`<span class="cat-chip weight">${esc(w)}</span>`);
+  if (c.sessionCount) chips.push(`<span class="cat-chip">${c.sessionCount} ${c.sessionCount === 1 ? 'sesión' : 'sesiones'}</span>`);
+  if (!chips.length) chips.push(`<span class="cat-chip ghost">Sin uso aún</span>`);
+  return `<span class="cat-chips">${chips.join('')}</span>`;
+};
+
+const catalogRowInner = (c, catKey, opts) => `
+  ${categoryTile(catKey, c.kind)}
+  <span class="catalog-text">
+    <span class="catalog-name">${esc(c.displayName)}</span>
+    ${catalogChips(c, opts)}
+  </span>`;
 
 const renderCatalog = (state, mode = 'view', routineId = null) => {
   const isPick = mode === 'pick';
@@ -1670,29 +1771,43 @@ const renderCatalog = (state, mode = 'view', routineId = null) => {
   const all = buildCatalog(state).filter((c) => c.catalogId);
   const list = all.filter((c) => !filter || c.name.includes(filter));
 
-  const items = list.map((c) => {
-    const badge = `
-      <span class="catalog-badge">
-        <span class="catalog-badge-value">${esc(c.lastWeight?.value ?? '·')}</span>
-        <span class="catalog-badge-unit">${esc(c.lastWeight?.unit ?? '')}</span>
-      </span>`;
-    const text = `
-      <span class="catalog-text">
-        <span class="catalog-name">${esc(c.displayName)}</span>
-        <span class="catalog-meta">${esc(catalogRowMeta(c))}</span>
-      </span>`;
+  const renderRow = (c) => {
+    const catKey = categoryOf(c);
     const slug = slugify(c.displayName);
     if (isPick) {
-      return `<li><button class="catalog-row" data-pick-catalog data-name="${esc(c.displayName)}">${badge}${text}<span class="catalog-chev" aria-hidden="true">›</span></button></li>`;
+      const inRoutine = routine.exercises.some((inst) => inst.catalogId === c.catalogId);
+      return `<li data-test-id="catalog-item"><button class="catalog-row" data-pick-catalog data-name="${esc(c.displayName)}">${catalogRowInner(c, catKey, { inRoutine })}<span class="catalog-chev plus" aria-hidden="true">＋</span></button></li>`;
     }
     if (isEdit) {
       return `
-        <li class="catalog-manage-row">
-          <button class="catalog-row" data-go="#/catalog/ex/${esc(slug)}/edit">${badge}${text}<span class="catalog-chev" aria-hidden="true">✎</span></button>
-          <button class="catalog-del-btn" data-delete-catalog data-name="${esc(c.displayName)}" aria-label="Eliminar ${esc(c.displayName)}">${iconTrash}</button>
+        <li class="catalog-manage-row" data-test-id="catalog-item">
+          <button class="catalog-row" data-go="#/catalog/ex/${esc(slug)}/edit">${catalogRowInner(c, catKey)}<span class="catalog-chev" aria-hidden="true">✎</span></button>
+          <button class="catalog-del-btn" data-test-id="catalog-delete" data-delete-catalog data-name="${esc(c.displayName)}" aria-label="Eliminar ${esc(c.displayName)}">${iconTrash}</button>
         </li>`;
     }
-    return `<li><button class="catalog-row" data-go="#/catalog/ex/${esc(slug)}">${badge}${text}<span class="catalog-chev" aria-hidden="true">›</span></button></li>`;
+    return `<li data-test-id="catalog-item"><button class="catalog-row" data-go="#/catalog/ex/${esc(slug)}">${catalogRowInner(c, catKey)}<span class="catalog-chev" aria-hidden="true">›</span></button></li>`;
+  };
+
+  // Group rows into muscle-group sections, ordered by CATEGORY_ORDER, alpha
+  // within each. Empty groups (e.g. while filtering) are skipped.
+  const groups = new Map();
+  for (const c of list) {
+    const key = categoryOf(c);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(c);
+  }
+  const items = CATEGORY_ORDER.filter((k) => groups.has(k)).map((k) => {
+    const rows = groups.get(k).sort((a, b) => a.displayName.localeCompare(b.displayName));
+    const cat = CATEGORIES[k];
+    return `
+      <div class="catalog-group">
+        <div class="catalog-group-head" style="--cat:${cat.color}">
+          <span class="catalog-group-dot" aria-hidden="true"></span>
+          <span class="catalog-group-label">${esc(cat.label)}</span>
+          <span class="catalog-group-count">${String(rows.length).padStart(2, '0')}</span>
+        </div>
+        <ul class="catalog-list">${rows.map(renderRow).join('')}</ul>
+      </div>`;
   }).join('');
 
   const title = isPick ? 'Agregar ejercicio' : 'Catálogo';
@@ -1710,7 +1825,7 @@ const renderCatalog = (state, mode = 'view', routineId = null) => {
     : '';
   const fab = isEdit ? `
     <div class="fab-row">
-      <button class="fab" data-add-catalog-exercise aria-label="Crear ejercicio">
+      <button class="fab" data-test-id="catalog-create" data-add-catalog-exercise aria-label="Crear ejercicio">
         <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
       </button>
     </div>` : '';
@@ -1729,18 +1844,12 @@ const renderCatalog = (state, mode = 'view', routineId = null) => {
       <span></span>
     </header>
     <div class="catalog-filter-wrap">
-      <input type="text" id="catalog-filter" class="catalog-filter"
+      <input type="text" id="catalog-filter" data-test-id="catalog-search" class="catalog-filter"
              placeholder="Buscar ejercicio…" autocomplete="off"
              value="${esc(catalogFilter)}" />
     </div>
     ${newBtn}
-    <div class="section catalog-section">
-      <span class="label">${isPick ? 'Del catálogo' : 'Todos los ejercicios'}</span>
-      <span class="count">${String(all.length).padStart(2, '0')}</span>
-    </div>
-    ${items
-      ? `<ul class="catalog-list">${items}</ul>`
-      : `<p class="muted small" style="padding:0.5rem 0.25rem">No hay ejercicios que coincidan.</p>`}
+    ${items || `<p class="muted small" style="padding:0.5rem 0.25rem">No hay ejercicios que coincidan.</p>`}
     ${fab}
     ${bottomBar(state, primary)}
   `;
@@ -1766,6 +1875,10 @@ const renderCatalogEditDrawer = (state, catalogEntry) => {
           <input type="text" data-cat-update name="name" value="${esc(catalogEntry.displayName)}" />
         </div>
         <div class="field">
+          <label>Grupo muscular</label>
+          ${categorySelect(template.category, 'data-cat-update')}
+        </div>
+        <div class="field">
           <label>Imagen o video (URL)</label>
           <input type="text" data-cat-update name="video" value="${esc(template.video ?? '')}"
                  placeholder="https://youtu.be/..." />
@@ -1784,6 +1897,173 @@ const renderCatalogEditDrawer = (state, catalogEntry) => {
         </div>
         ${usedCount > 0 ? `
         <p class="muted small" style="padding:0.5rem 0.25rem">Se quitará de la${usedCount === 1 ? '' : 's'} ${usedCount} rutina${usedCount === 1 ? '' : 's'} que lo usa${usedCount === 1 ? '' : 'n'}. Las sesiones registradas se mantienen.</p>` : ''}
+      </div>
+    </aside>
+  `;
+};
+
+// ---------- Guided week builder ----------
+// A step-per-day wizard (Día 1 → N) that makes filling the whole week feel
+// self-guided: name the day, add exercises via a multi-select sheet, set reps,
+// move on. It edits the existing routines in place (one per day, by order); an
+// empty day simply reads as a rest day everywhere else.
+
+// One-line summary of an exercise instance for the builder rows.
+const exerciseSummary = (ex) => {
+  const series = exSeries(ex);
+  if (exKind(ex) === 'time') return seriesDuration(series) || 'Sin duración';
+  const n = series.length;
+  const reps = series.map((s) => numOrNull(s.reps));
+  const uniform = reps.length && reps.every((r) => r === reps[0]) ? reps[0] : null;
+  const w = fmtSeriesWeights(series, exUnit(ex));
+  const repsPart = uniform != null ? `${n} × ${uniform}` : `${n} series`;
+  return w ? `${repsPart} · ${w}` : repsPart;
+};
+
+// Build a fresh routine reference for a catalog row: 3 sets, reps default to 10
+// (a sensible starting point), weight prefilled from the last known value.
+const instanceFromCatalog = (cat) => {
+  const prefillW = cat.lastWeight ? cat.lastWeight.value : null;
+  const series = makeSeries(3, cat.kind).map((s) =>
+    cat.kind === 'time' ? s : { ...s, weight: prefillW, reps: 10 });
+  return { id: uid(), catalogId: cat.catalogId, series };
+};
+
+const renderBuild = (state, step, editExerciseId) => {
+  const routines = state.doc.routines;
+  if (routines.length === 0) return renderHome(state);
+  const idx = Math.min(step, routines.length - 1);
+  const routine = routines[idx];
+  const total = routines.length;
+  const isLast = idx >= total - 1;
+
+  const dots = routines.map((r, i) => {
+    const filled = r.exercises.length > 0;
+    const cls = i === idx ? 'on' : (filled ? 'done' : '');
+    return `<span class="build-dot ${cls}" aria-hidden="true"></span>`;
+  }).join('');
+
+  const exItems = routine.exercises.map((inst) => {
+    const ex = hydrateExercise(state, inst);
+    const catKey = categoryOf({ category: ex.category, displayName: ex.name, kind: ex.kind });
+    return `
+      <div class="build-ex">
+        ${categoryTile(catKey, ex.kind)}
+        <div class="build-ex-text">
+          <span class="build-ex-name">${esc(ex.name)}</span>
+          <span class="build-ex-sub">${esc(exerciseSummary(ex))}</span>
+        </div>
+        <button class="build-ex-btn" data-build-edit data-routine="${esc(routine.id)}" data-exercise="${esc(ex.id)}" data-step="${idx}" aria-label="Editar ${esc(ex.name)}">${iconEdit}</button>
+        <button class="build-ex-btn danger-edit" data-remove-exercise data-routine="${esc(routine.id)}" data-exercise="${esc(ex.id)}" aria-label="Quitar ${esc(ex.name)}">${iconTrash}</button>
+      </div>`;
+  }).join('');
+
+  const body = routine.exercises.length === 0
+    ? `<div class="build-empty">
+         <p>Agregá los ejercicios de este día, o dejalo vacío para marcarlo como <strong>descanso</strong>.</p>
+       </div>`
+    : `<div class="build-ex-list">${exItems}</div>`;
+
+  const drawer = editExerciseId
+    ? renderDrawer(routine, hydrateExercise(state, routine.exercises.find((e) => e.id === editExerciseId)))
+    : '';
+
+  return `
+    <header class="build-bar">
+      <button class="back-btn" data-build-finish aria-label="Salir del armado">✕</button>
+      <div class="build-progress">
+        <div class="build-step-label">Armar mi semana · Paso ${idx + 1} de ${total}</div>
+        <div class="build-dots">${dots}</div>
+      </div>
+      <span></span>
+    </header>
+
+    <div class="build-day">
+      <span class="build-day-eyebrow">Día ${esc(dayWord(idx))}</span>
+      <input class="build-day-name" type="text" data-rename-routine data-routine="${esc(routine.id)}"
+             value="${esc(routine.name)}" placeholder="Nombre del día" aria-label="Nombre del día" maxlength="80" />
+      ${body}
+      <button class="build-add" data-build-add data-routine="${esc(routine.id)}">
+        <span class="build-add-icon" aria-hidden="true">＋</span>
+        Agregar ejercicios
+      </button>
+    </div>
+
+    <nav class="build-nav">
+      <button class="ghost" data-go="#/build/${idx - 1}" ${idx === 0 ? 'disabled' : ''}>Atrás</button>
+      ${isLast
+        ? `<button class="primary" data-build-finish>Terminar</button>`
+        : `<button class="primary" data-go="#/build/${idx + 1}">Siguiente</button>`}
+    </nav>
+    ${drawer}
+  `;
+};
+
+// Multi-select picker sheet over a build step: tick several exercises, "Agregar
+// (N)" inserts them all into the day at once.
+const renderBuildPickSheet = (state, step) => {
+  const routine = state.doc.routines[Math.min(step, state.doc.routines.length - 1)];
+  if (!routine) return '';
+  const filter = normalizeName(buildPickFilter);
+  const all = buildCatalog(state).filter((c) => c.catalogId);
+  const list = all.filter((c) => !filter || c.name.includes(filter));
+
+  const groups = new Map();
+  for (const c of list) {
+    const key = categoryOf(c);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(c);
+  }
+  const sections = CATEGORY_ORDER.filter((k) => groups.has(k)).map((k) => {
+    const rows = groups.get(k).sort((a, b) => a.displayName.localeCompare(b.displayName));
+    const cat = CATEGORIES[k];
+    const rowsHtml = rows.map((c) => {
+      const sel = buildPickSelected.has(c.catalogId);
+      const inRoutine = routine.exercises.some((inst) => inst.catalogId === c.catalogId);
+      return `
+        <button class="build-pick-row ${sel ? 'sel' : ''}" data-build-pick-toggle data-catalog-id="${esc(c.catalogId)}">
+          <span class="build-pick-check" aria-hidden="true"></span>
+          ${categoryTile(k, c.kind)}
+          <span class="build-pick-name">${esc(c.displayName)}${inRoutine ? ` <span class="build-pick-in">ya está</span>` : ''}</span>
+        </button>`;
+    }).join('');
+    return `
+      <div class="catalog-group">
+        <div class="catalog-group-head" style="--cat:${cat.color}">
+          <span class="catalog-group-dot" aria-hidden="true"></span>
+          <span class="catalog-group-label">${esc(cat.label)}</span>
+        </div>
+        <div class="build-pick-list">${rowsHtml}</div>
+      </div>`;
+  }).join('');
+
+  const n = buildPickSelected.size;
+  return `
+    <div class="drawer-backdrop" data-build-pick-cancel></div>
+    <aside class="drawer build-pick-drawer" role="dialog" aria-modal="true" aria-label="Agregar ejercicios">
+      <div class="drawer-handle" aria-hidden="true"></div>
+      <div class="drawer-header">
+        <h3>Agregar a ${esc(routine.name)}</h3>
+        <button class="icon-btn" data-build-pick-cancel aria-label="Cerrar">✕</button>
+      </div>
+      <div class="drawer-body">
+        <div class="catalog-filter-wrap">
+          <input type="text" id="build-pick-filter" class="catalog-filter"
+                 placeholder="Buscar ejercicio…" autocomplete="off" value="${esc(buildPickFilter)}" />
+        </div>
+        <button class="catalog-new" data-add-catalog-exercise>
+          <span class="catalog-new-icon" aria-hidden="true">＋</span>
+          <span class="catalog-new-text">
+            <span class="catalog-new-title">Crear ejercicio nuevo</span>
+            <span class="catalog-new-sub">Se agrega al catálogo</span>
+          </span>
+        </button>
+        ${sections || `<p class="muted small" style="padding:0.5rem 0.25rem">No hay ejercicios que coincidan.</p>`}
+      </div>
+      <div class="build-pick-foot">
+        <button class="primary" data-build-pick-commit ${n === 0 ? 'disabled' : ''}>
+          ${n === 0 ? 'Elegí ejercicios' : `Agregar ${n}`}
+        </button>
       </div>
     </aside>
   `;
@@ -1820,7 +2100,17 @@ const renderEdit = (state) => {
       <span class="count">${String(state.doc.routines.length).padStart(2, '0')}</span>
     </div>
     <p class="edit-hint">Renombrá, reordená o eliminá rutinas. Para editar los ejercicios de una rutina, abríla y tocá <em>Editar</em>.</p>
-    <div class="edit-list" data-reorder-list>${items}</div>
+    <button class="build-cta" data-go="#/build/0">
+      <span class="build-cta-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.5 5 5.5.8-4 3.9 1 5.5-5-2.6-5 2.6 1-5.5-4-3.9 5.5-.8z"/></svg>
+      </span>
+      <span class="build-cta-text">
+        <span class="build-cta-title">Armar mi semana</span>
+        <span class="build-cta-sub">Guía paso a paso para todos los días</span>
+      </span>
+      <span class="catalog-chev" aria-hidden="true">›</span>
+    </button>
+    <div class="edit-list" data-test-id="routines-editor" data-reorder-list>${items}</div>
     <div class="fab-row">
       <button class="fab" data-add-routine aria-label="Nueva rutina">
         <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -1852,15 +2142,18 @@ const render = (state) => {
   else if (route.name === 'dashboard') html = renderDashboard(state);
   else if (route.name === 'catalog') html = renderCatalog(state, route.mode, route.routineId);
   else if (route.name === 'exercise') html = renderExerciseDetail(state, route.slug, !!route.editMode, route.origin);
+  else if (route.name === 'build') html = renderBuild(state, route.step, route.editExerciseId);
   else html = renderHome(state);
 
+  if (buildPickOpen && route.name === 'build') html += renderBuildPickSheet(state, route.step);
   if (menuOpen) html += renderMenuSheet();
   if (newRoutineOpen) html += renderNewRoutineSheet();
   if (catalogFormOpen) html += renderCatalogFormSheet();
   if (stopwatchOpen) html += renderStopwatchSheet();
 
   const exerciseEditDrawerOpen = route.name === 'exercise' && !!route.editMode;
-  const drawerOpen = (route.name === 'workout' && !!route.editExerciseId) || menuOpen || newRoutineOpen || catalogFormOpen || stopwatchOpen || exerciseEditDrawerOpen;
+  const buildDrawerOpen = route.name === 'build' && (!!route.editExerciseId || buildPickOpen);
+  const drawerOpen = (route.name === 'workout' && !!route.editExerciseId) || menuOpen || newRoutineOpen || catalogFormOpen || stopwatchOpen || exerciseEditDrawerOpen || buildDrawerOpen;
   const suppressDrawerAnim = drawerOpen && lastDrawerOpen;
 
   const routeKey = JSON.stringify(route);
@@ -1915,6 +2208,15 @@ const render = (state) => {
       });
     }
   }
+  if (buildPickOpen) {
+    const input = document.getElementById('build-pick-filter');
+    if (input && document.activeElement !== input && buildPickFilter) {
+      requestAnimationFrame(() => {
+        input.focus({ preventScroll: true });
+        try { input.setSelectionRange(input.value.length, input.value.length); } catch {}
+      });
+    }
+  }
 
   // Wire drag-to-reorder on any list flagged with data-reorder-list. The
   // command to dispatch is selected by `data-reorder-kind`.
@@ -1963,9 +2265,16 @@ const render = (state) => {
           if (history.length > 1) history.back();
           else go(`#/${route.origin || 'dashboard'}/ex/${route.slug}`);
         }
+      } else if (bd.hasAttribute('data-build-pick-cancel')) {
+        buildPickOpen = false;
+        buildPickSelected.clear();
+        buildPickFilter = '';
+        render(store.state);
       } else if (bd.hasAttribute('data-close-drawer')) {
         const route = parseRoute();
-        if (route.name === 'workout' && route.editExerciseId) {
+        if (route.name === 'build' && route.editExerciseId) {
+          go(`#/build/${route.step}`);
+        } else if (route.name === 'workout' && route.editExerciseId) {
           if (history.length > 1) history.back();
           else go(`#/workout/${route.routineId}`);
         }
@@ -2070,7 +2379,7 @@ const importConfig = async () => {
 // ---------- event delegation ----------
 
 const onClick = async (e) => {
-  const t = e.target.closest('[data-go],[data-done],[data-undo],[data-redo],[data-toggle-set],[data-toggle-media],[data-clear-sets],[data-add-routine],[data-add-exercise],[data-remove-exercise],[data-remove-routine],[data-reset],[data-edit-exercise],[data-close-drawer],[data-menu],[data-close-menu],[data-export],[data-import],[data-cancel-new-routine],[data-add-catalog-exercise],[data-cancel-catalog-form],[data-stopwatch],[data-close-stopwatch],[data-pick-catalog],[data-close-catalog-edit],[data-detail-range],[data-delete-catalog]');
+  const t = e.target.closest('[data-go],[data-done],[data-undo],[data-redo],[data-toggle-set],[data-toggle-media],[data-clear-sets],[data-add-routine],[data-add-exercise],[data-remove-exercise],[data-remove-routine],[data-reset],[data-edit-exercise],[data-close-drawer],[data-menu],[data-close-menu],[data-export],[data-import],[data-cancel-new-routine],[data-add-catalog-exercise],[data-cancel-catalog-form],[data-stopwatch],[data-close-stopwatch],[data-pick-catalog],[data-close-catalog-edit],[data-detail-range],[data-delete-catalog],[data-series-step],[data-build-add],[data-build-edit],[data-build-pick-toggle],[data-build-pick-commit],[data-build-pick-cancel],[data-build-finish]');
   if (!t) return;
 
   if (t.hasAttribute('data-go')) {
@@ -2139,7 +2448,9 @@ const onClick = async (e) => {
   }
   if (t.hasAttribute('data-close-drawer')) {
     const route = parseRoute();
-    if (route.name === 'workout' && route.editExerciseId) {
+    if (route.name === 'build' && route.editExerciseId) {
+      go(`#/build/${route.step}`);
+    } else if (route.name === 'workout' && route.editExerciseId) {
       // history.back so we return to whatever route opened the drawer
       // (edit-routine list, workout normal, workout edit). Fall back to
       // the normal workout view if we landed here directly.
@@ -2228,6 +2539,59 @@ const onClick = async (e) => {
     go(`#/catalog/pick/${routineId}`);
     return;
   }
+  if (t.hasAttribute('data-build-finish')) {
+    buildPickOpen = false;
+    buildPickSelected.clear();
+    go('#/');
+    showToast('Semana guardada 💪');
+    return;
+  }
+  if (t.hasAttribute('data-build-edit')) {
+    go(`#/build/${t.dataset.step}/ex/${t.dataset.exercise}`);
+    return;
+  }
+  if (t.hasAttribute('data-build-add')) {
+    buildPickOpen = true;
+    buildPickSelected.clear();
+    buildPickFilter = '';
+    render(store.state);
+    return;
+  }
+  if (t.hasAttribute('data-build-pick-cancel')) {
+    buildPickOpen = false;
+    buildPickSelected.clear();
+    buildPickFilter = '';
+    render(store.state);
+    return;
+  }
+  if (t.hasAttribute('data-build-pick-toggle')) {
+    const id = t.dataset.catalogId;
+    if (buildPickSelected.has(id)) buildPickSelected.delete(id);
+    else buildPickSelected.add(id);
+    render(store.state);
+    return;
+  }
+  if (t.hasAttribute('data-build-pick-commit')) {
+    const route = parseRoute();
+    if (route.name !== 'build') return;
+    const routine = store.state.doc.routines[Math.min(route.step, store.state.doc.routines.length - 1)];
+    if (!routine || buildPickSelected.size === 0) return;
+    // Insert one reference per ticked catalog entry, in catalog order.
+    const cat = buildCatalog(store.state).filter((c) => c.catalogId && buildPickSelected.has(c.catalogId));
+    for (const c of cat) {
+      const exercise = instanceFromCatalog(c);
+      store.dispatch(makeCommand('ADD_EXERCISE', {
+        routineId: routine.id, index: routine.exercises.length, exercise,
+      }));
+    }
+    const n = buildPickSelected.size;
+    buildPickOpen = false;
+    buildPickSelected.clear();
+    buildPickFilter = '';
+    render(store.state);
+    showToast(`${n} ${n === 1 ? 'ejercicio agregado' : 'ejercicios agregados'}`);
+    return;
+  }
   if (t.hasAttribute('data-pick-catalog')) {
     // Insert a reference to the chosen catalog entry into the pick routine,
     // then open the new instance's editor to set its series.
@@ -2256,6 +2620,23 @@ const onClick = async (e) => {
       if (history.length > 1) history.back();
       else go(`#/${route.origin || 'dashboard'}/ex/${route.slug}`);
     }
+    return;
+  }
+  if (t.hasAttribute('data-series-step')) {
+    // +/- the set count from the editor's stepper. Resizes the instance's
+    // series (cloning the last set's values into any new set).
+    const routineId = t.dataset.routine;
+    const exerciseId = t.dataset.exercise;
+    const r = store.state.doc.routines.find((x) => x.id === routineId);
+    const inst = r?.exercises.find((ex) => ex.id === exerciseId);
+    if (!inst) return;
+    const kind = hydrateExercise(store.state, inst).kind;
+    const from = structuredClone(Array.isArray(inst.series) ? inst.series : []);
+    const n = Math.max(1, Math.min(20, from.length + Number(t.dataset.seriesStep)));
+    if (n === from.length) return;
+    store.dispatch(makeCommand('UPDATE_SERIES', {
+      routineId, exerciseId, from, to: resizeSeries(from, n, kind),
+    }));
     return;
   }
   if (t.hasAttribute('data-detail-range')) {
@@ -2363,6 +2744,9 @@ const onInput = (e) => {
   if (t.id === 'catalog-filter') {
     catalogFilter = t.value;
     render(store.state);
+  } else if (t.id === 'build-pick-filter') {
+    buildPickFilter = t.value;
+    render(store.state);
   }
 };
 
@@ -2382,6 +2766,8 @@ const dispatchEntryFieldChange = (catalogId, field, value) => {
     to.name = trimmed;
   } else if (field === 'kind') {
     to.kind = value === 'time' ? 'time' : 'reps';
+  } else if (field === 'category') {
+    to.category = normCategory(value);
   } else if (field === 'video') {
     to.video = String(value).trim() || null;
   } else if (field === 'notes') {
@@ -2457,7 +2843,7 @@ const onChange = (e) => {
     if (!inst) return;
     const field = t.name;
     // Definition fields edit the catalog entry (and propagate to all routines).
-    if (field === 'name' || field === 'kind' || field === 'video' || field === 'notes' || field === 'unit') {
+    if (field === 'name' || field === 'kind' || field === 'category' || field === 'video' || field === 'notes' || field === 'unit') {
       dispatchEntryFieldChange(inst.catalogId, field, t.value);
       return;
     }
@@ -2496,6 +2882,7 @@ const onSubmit = (e) => {
     const name = (nameEl?.value ?? '').trim();
     if (!name) { nameEl?.focus(); return; }
     const kind = document.getElementById('cat-form-kind')?.value === 'time' ? 'time' : 'reps';
+    const category = normCategory(document.getElementById('cat-form-category')?.value);
     const video = (document.getElementById('cat-form-video')?.value ?? '').trim() || null;
     const notes = (document.getElementById('cat-form-notes')?.value ?? '').trim();
     const pickRoutineId = catalogPickRoutineId;
@@ -2504,7 +2891,7 @@ const onSubmit = (e) => {
     // of creating a duplicate; otherwise create one.
     let entry = (store.state.doc.catalog || []).find((c) => normalizeName(c.name) === normalizeName(name));
     if (!entry) {
-      entry = { id: uid(), name, kind, video, notes, unit: 'kg' };
+      entry = { id: uid(), name, category, kind, video, notes, unit: 'kg' };
       store.dispatch(makeCommand('ADD_CATALOG_EXERCISE', {
         index: (store.state.doc.catalog ?? []).length, exercise: entry,
       }));
@@ -2587,6 +2974,9 @@ const start = async () => {
     catalogFilter = '';
     catalogEditName = null;
     detailRange = '30d';
+    buildPickOpen = false;
+    buildPickSelected.clear();
+    buildPickFilter = '';
     if (stopwatchTimer) { clearInterval(stopwatchTimer); stopwatchTimer = null; }
     releaseWakeLock();
     stopwatchOpen = false;

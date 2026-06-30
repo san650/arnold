@@ -16,10 +16,13 @@ const reps3 = () => [
 const time3 = (d) => [{ duration: d }, { duration: d }, { duration: d }];
 
 // A catalog definition, keyed for routine references. `id` is a stable,
-// readable slug derived from the key.
-const def = (key, name, extra = {}) => ({
+// readable slug derived from the key. `category` is the muscle group the user
+// assigns (pecho · espalda · hombros · piernas · brazos · core · otros); it
+// drives how the catalog is grouped.
+const def = (key, name, category, extra = {}) => ({
   id: `cat-${key}`,
   name,
+  category,
   kind: extra.kind === 'time' ? 'time' : 'reps',
   video: extra.video ?? null,
   notes: extra.notes ?? '',
@@ -30,31 +33,31 @@ const def = (key, name, extra = {}) => ({
 const ref = (id, key, series) => ({ id, catalogId: `cat-${key}`, series });
 
 const CATALOG = [
-  def('bench', 'Press de banca con barra', { notes: 'Barbell Bench Press · pecho plano' }),
-  def('ohp', 'Press militar con barra', { video: 'https://youtu.be/waeCyaAQRn8', notes: 'Barbell Military Press' }),
-  def('incline', 'Press inclinado con mancuernas', { video: 'https://youtu.be/bR_dKXdtfrQ', notes: 'Dumbbell Incline Press' }),
-  def('lateral', 'Elevaciones laterales con mancuernas', { video: 'https://youtu.be/XPPfnSEATJA', notes: 'Dumbbell Lateral Raises' }),
-  def('frenchpress', 'Press francés con mancuerna', { video: 'https://youtu.be/BW15DLXmvUY', notes: 'Dumbbell Tricep Extensions' }),
-  def('squat', 'Sentadilla con barra', { video: 'https://youtu.be/S9iWwaqbD3Q', notes: 'Barbell Squats' }),
-  def('bulgarian', 'Sentadilla búlgara', { video: 'https://youtu.be/9p5e2BSvoLs', notes: 'Bulgarian Split Squats · por pierna' }),
-  def('legpress', 'Prensa de piernas', { video: 'https://youtu.be/px3fnV8dCl0', notes: 'Leg Press' }),
-  def('legext', 'Extensión de cuádriceps', { video: 'https://youtube.com/shorts/iQ92TuvBqRo', notes: 'Leg Extensions' }),
-  def('calf', 'Elevación de talones de pie', { video: 'https://youtube.com/shorts/lyDp3tbx3qU', notes: 'Standing Calf Raises' }),
-  def('deadlift', 'Peso muerto con barra', { notes: 'Barbell Deadlifts' }),
-  def('row', 'Remo con barra inclinado', { notes: 'Barbell Bent Over Rows' }),
-  def('pulldown', 'Jalón al pecho en polea', { notes: 'Lat Pulldowns' }),
-  def('upright', 'Remo al mentón con mancuernas', { notes: 'Dumbbell Upright Rows' }),
-  def('curl', 'Curl de bíceps alterno con mancuernas', { notes: 'Dumbbell Single Arm Bicep Curls' }),
-  def('hamcurl', 'Curl femoral tumbado', { notes: 'Hamstring Curls' }),
-  def('glute', 'Puente de glúteos', { notes: 'Glute Bridges' }),
-  def('plank', 'Plancha abdominal', { kind: 'time', notes: 'Plank' }),
+  def('bench', 'Press de banca con barra', 'pecho', { notes: 'Barbell Bench Press · pecho plano' }),
+  def('ohp', 'Press militar con barra', 'hombros', { video: 'https://youtu.be/waeCyaAQRn8', notes: 'Barbell Military Press' }),
+  def('incline', 'Press inclinado con mancuernas', 'pecho', { video: 'https://youtu.be/bR_dKXdtfrQ', notes: 'Dumbbell Incline Press' }),
+  def('lateral', 'Elevaciones laterales con mancuernas', 'hombros', { video: 'https://youtu.be/XPPfnSEATJA', notes: 'Dumbbell Lateral Raises' }),
+  def('frenchpress', 'Press francés con mancuerna', 'brazos', { video: 'https://youtu.be/BW15DLXmvUY', notes: 'Dumbbell Tricep Extensions' }),
+  def('squat', 'Sentadilla con barra', 'piernas', { video: 'https://youtu.be/S9iWwaqbD3Q', notes: 'Barbell Squats' }),
+  def('bulgarian', 'Sentadilla búlgara', 'piernas', { video: 'https://youtu.be/9p5e2BSvoLs', notes: 'Bulgarian Split Squats · por pierna' }),
+  def('legpress', 'Prensa de piernas', 'piernas', { video: 'https://youtu.be/px3fnV8dCl0', notes: 'Leg Press' }),
+  def('legext', 'Extensión de cuádriceps', 'piernas', { video: 'https://youtube.com/shorts/iQ92TuvBqRo', notes: 'Leg Extensions' }),
+  def('calf', 'Elevación de talones de pie', 'piernas', { video: 'https://youtube.com/shorts/lyDp3tbx3qU', notes: 'Standing Calf Raises' }),
+  def('deadlift', 'Peso muerto con barra', 'espalda', { notes: 'Barbell Deadlifts' }),
+  def('row', 'Remo con barra inclinado', 'espalda', { notes: 'Barbell Bent Over Rows' }),
+  def('pulldown', 'Jalón al pecho en polea', 'espalda', { notes: 'Lat Pulldowns' }),
+  def('upright', 'Remo al mentón con mancuernas', 'hombros', { notes: 'Dumbbell Upright Rows' }),
+  def('curl', 'Curl de bíceps alterno con mancuernas', 'brazos', { notes: 'Dumbbell Single Arm Bicep Curls' }),
+  def('hamcurl', 'Curl femoral tumbado', 'piernas', { notes: 'Hamstring Curls' }),
+  def('glute', 'Puente de glúteos', 'piernas', { notes: 'Glute Bridges' }),
+  def('plank', 'Plancha abdominal', 'core', { kind: 'time', notes: 'Plank' }),
 ];
 
 export const SEED = {
   routines: [
     {
       id: 'day1',
-      name: 'Día 1: Tren Superior (Empuje)',
+      name: 'Tren Superior (Empuje)',
       exercises: [
         ref('d1e1', 'bench', reps3()),
         ref('d1e2', 'ohp', reps3()),
@@ -65,7 +68,7 @@ export const SEED = {
     },
     {
       id: 'day2',
-      name: 'Día 2: Tren Inferior',
+      name: 'Tren Inferior',
       exercises: [
         ref('d2e1', 'squat', reps3()),
         ref('d2e2', 'bulgarian', reps3()),
@@ -74,10 +77,10 @@ export const SEED = {
         ref('d2e5', 'calf', reps3()),
       ],
     },
-    { id: 'day3', name: 'Día 3: Descanso o Cardio', exercises: [] },
+    { id: 'day3', name: 'Descanso o Cardio', exercises: [] },
     {
       id: 'day4',
-      name: 'Día 4: Tren Superior (Tirón)',
+      name: 'Tren Superior (Tirón)',
       exercises: [
         ref('d4e1', 'deadlift', reps3()),
         ref('d4e2', 'row', reps3()),
@@ -88,7 +91,7 @@ export const SEED = {
     },
     {
       id: 'day5',
-      name: 'Día 5: Tren Inferior y Abdominales',
+      name: 'Tren Inferior y Abdominales',
       exercises: [
         ref('d5e1', 'squat', reps3()),
         ref('d5e2', 'hamcurl', reps3()),
@@ -96,8 +99,8 @@ export const SEED = {
         ref('d5e4', 'plank', time3('30-60 seg')),
       ],
     },
-    { id: 'day6', name: 'Día 6: Descanso', exercises: [] },
-    { id: 'day7', name: 'Día 7: Descanso', exercises: [] },
+    { id: 'day6', name: 'Descanso', exercises: [] },
+    { id: 'day7', name: 'Descanso', exercises: [] },
   ],
   catalog: CATALOG,
   sessions: {},

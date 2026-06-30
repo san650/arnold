@@ -1,7 +1,7 @@
 # Workout logging -------------------------------------------------------------
 
 When('I mark the first set complete') do
-  @page.locator('.set-btn').first.click
+  @page.locator('[data-test-id="set-toggle"]').first.click
 end
 
 Then('the day progress should be {string}') do |progress|
@@ -29,7 +29,7 @@ When('I add a routine named {string}') do |name|
   wait_for('#new-routine-form')
   @page.fill('#new-routine-name', name)
   click('#new-routine-form button[type="submit"]')
-  wait_for('.edit-list')
+  wait_for('[data-test-id="routines-editor"]')
 end
 
 When('I delete the routine {string}') do |routine_id|
