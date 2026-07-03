@@ -2881,6 +2881,14 @@ const inputActions = {
   'build-pick-filter': (t) => { ui.buildPickFilter = t.value; render(store.state); },
 };
 
+// The catalog is unique by normalized name (buildCatalog keeps only the first
+// match), so a rename that collides with another entry would make one of them
+// unreachable in the UI. Creation already dedupes; renames must too.
+const catalogNameTaken = (name, exceptId) =>
+  (store.state.doc.catalog || []).some(
+    (c) => c.id !== exceptId && normalizeName(c.name) === normalizeName(name),
+  );
+
 // Edit one catalog entry's definition field via UPDATE_CATALOG_ENTRY. Because
 // routines reference the entry, the change propagates everywhere. A `kind`
 // change reshapes the series of every referencing instance so undo is exact.
@@ -2894,6 +2902,11 @@ const dispatchEntryFieldChange = (catalogId, field, value) => {
   if (field === 'name') {
     const trimmed = String(value).trim();
     if (!trimmed) return false;
+    if (catalogNameTaken(trimmed, catalogId)) {
+      showToast(`Ya existe "${trimmed}" en el catálogo`);
+      render(store.state); // snap the field back to the stored name
+      return false;
+    }
     to.name = trimmed;
   } else if (field === 'kind') {
     to.kind = value === 'time' ? 'time' : 'reps';
@@ -2933,6 +2946,13 @@ const dispatchCatalogFieldChange = (field, value) => {
   if (field === 'name') {
     const trimmed = String(value).trim();
     if (!trimmed || trimmed === entry.name) return;
+    // Bail before retargeting the route — otherwise a rejected rename leaves
+    // the slug pointing at a name that doesn't exist.
+    if (catalogNameTaken(trimmed, entry.id)) {
+      showToast(`Ya existe "${trimmed}" en el catálogo`);
+      render(store.state);
+      return;
+    }
     ui.catalogEditName = normalizeName(trimmed);
     const route = parseRoute();
     if (route.name === 'exercise' && route.editMode) {
