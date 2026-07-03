@@ -61,9 +61,9 @@ const html = (strings, ...values) =>
 const dataTest = (id) => raw(`data-test-id="${id}"`);
 
 // Only allow http/https/youtube links. Block javascript:/data: in hrefs.
-const safeUrl = (raw) => {
-  if (!raw) return '';
-  const s = String(raw).trim();
+const safeUrl = (url) => {
+  if (!url) return '';
+  const s = String(url).trim();
   if (/^https?:\/\//i.test(s)) return s;
   return '';
 };
@@ -795,12 +795,12 @@ const refreshQuotesFromNetwork = async () => {
   try {
     const res = await fetch('./quotes.json', { cache: 'no-cache' });
     if (!res.ok) return;
-    const raw = await res.text();
-    const list = JSON.parse(raw);
+    const text = await res.text();
+    const list = JSON.parse(text);
     if (!Array.isArray(list) || list.length === 0) return;
     const cached = await loadQuotes().catch(() => null);
-    if (!cached || cached.raw !== raw) {
-      await saveQuotes({ raw, quotes: list });
+    if (!cached || cached.raw !== text) {
+      await saveQuotes({ raw: text, quotes: list });
     }
     quotesCache = list;
   } catch {}
