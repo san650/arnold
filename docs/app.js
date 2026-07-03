@@ -756,8 +756,8 @@ const bottomBar = (state, primary = '') => html`
   <nav class="bottom-bar">
     <div class="bottom-bar-inner">
       <div class="group">
-        <button class="tool-btn" data-action="undo" aria-label="Deshacer" ${state._undo ? '' : 'disabled'}>${icons.undo}</button>
-        <button class="tool-btn" data-action="redo" aria-label="Rehacer" ${state._redo ? '' : 'disabled'}>${icons.redo}</button>
+        <button class="tool-btn" data-action="undo" aria-label="Deshacer" ${store.canUndo() ? '' : 'disabled'}>${icons.undo}</button>
+        <button class="tool-btn" data-action="redo" aria-label="Rehacer" ${store.canRedo() ? '' : 'disabled'}>${icons.redo}</button>
       </div>
       <div class="group">
         ${primary}
@@ -2190,9 +2190,6 @@ const overlays = [
 ];
 
 const render = (state) => {
-  state._undo = store.canUndo();
-  state._redo = store.canRedo();
-
   const route = parseRoute();
   // The catalog-edit drawer's bulk dispatchers read `ui.catalogEditName` to
   // know which exercise's instances to update. Keep it in sync with the
