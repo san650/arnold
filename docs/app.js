@@ -1656,7 +1656,9 @@ const renderExerciseDetail = (state, slug, editMode, origin = 'dashboard') => {
   const normName = normalizeName(unslug(slug));
   const all = buildExerciseHistory(state, normName);
   if (all.length === 0 && !buildCatalog(state).some((c) => c.name === normName)) {
-    // Unknown slug — bounce to the origin list rather than render an empty page.
+    // Unknown slug — bounce to the origin list rather than render an empty
+    // page, and fix the URL so a refresh doesn't re-bounce.
+    history.replaceState(null, '', home);
     return origin === 'catalog' ? renderCatalog(state, 'view') : renderDashboard(state);
   }
   const catalogEntry = buildCatalog(state).find((c) => c.name === normName);
