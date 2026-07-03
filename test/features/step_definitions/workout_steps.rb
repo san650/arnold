@@ -4,6 +4,10 @@ When('I mark the first set complete') do
   @page.locator(data_test('set-toggle')).first.click
 end
 
+When("I restart today's checklist") do
+  click('[data-action="clear-sets"]')
+end
+
 Then('the day progress should be {string}') do |progress|
   ok = false
   20.times { (ok = has_text?(progress)) ? break : sleep(0.1) }

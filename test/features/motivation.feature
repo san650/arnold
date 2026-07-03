@@ -5,7 +5,7 @@ Feature: Daily motivation
 
   Scenario: Tapping the title shows the daily quote and returns
     Given I open the app
-    When I tap the title
+    When I open the daily motivation
     Then I should see "tocá para volver"
-    When I tap to return
+    When I return home from the motivation screen
     Then I should see "Rutinas"

@@ -24,9 +24,8 @@ end
 
 # Generic interaction ---------------------------------------------------------
 
-When('I tap {string}') { |label| tap_button(label) }
-When('I tap the title') { click('[data-tap-title]') }
-When('I tap to return') { click('.motivation') }
+When('I open the daily motivation') { click('[data-tap-title]') }
+When('I return home from the motivation screen') { click('.motivation') }
 When('I undo') { click('[data-action="undo"]') }
 When('I redo') { click('[data-action="redo"]') }
 
@@ -53,13 +52,11 @@ Then('I should see {string}') do |text|
   expect(ok).to be(true), %(expected the page to show "#{text}")
 end
 
-Then('I should not see {string}') do |text|
-  expect(has_text?(text)).to be(false), %(expected the page NOT to show "#{text}")
-end
-
 Then('the dialog should mention {string}') do |text|
   wait_for('.modal-wrap')
-  expect(body_text).to include(text)
+  # Scope to the modal — a body-wide match could pass on page text behind it.
+  modal_text = @page.eval_on_selector('.modal-wrap', '(el) => el.innerText')
+  expect(modal_text).to include(text)
 end
 
 Then('I should see {int} routines') do |n|

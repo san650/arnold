@@ -14,11 +14,14 @@ When('I search the catalog for {string}') do |query|
 end
 
 When('I open the exercise {string}') do |name|
-  @page.get_by_text(name, exact: true).first.click
+  # Scope to the entry's card rather than navigating by free text — a catalog
+  # row or, on the progress screen, a latest-exercise card.
+  row = %(#{data_test('catalog-item')}:has-text("#{name}"), #{data_test('latest-card')}:has-text("#{name}"))
+  @page.locator(row).first.click
   wait_for(data_test('exercise-detail'))
 end
 
-When('I tap the edit button') do
+When('I start editing the exercise') do
   @page.get_by_role('button', name: 'Editar ejercicio').first.click
   wait_for('.drawer')
 end
@@ -34,8 +37,10 @@ When('I create the exercise {string}') do |name|
 end
 
 When('I rename the exercise {string} to {string}') do |old_name, new_name|
-  # In edit mode the row navigates to the exercise's edit drawer.
-  @page.get_by_role('button', name: old_name, exact: false).first.click
+  # In edit mode the row navigates to the exercise's edit drawer. Scope to the
+  # catalog row — its accessible name also carries the usage chips, so an
+  # exact role lookup can't match and substring lookups are banned.
+  @page.locator(%(#{data_test('catalog-item')}:has-text("#{old_name}") .catalog-row)).first.click
   wait_for('[data-cat-update][name="name"]')
   set_field('[data-cat-update][name="name"]', new_name)
 end

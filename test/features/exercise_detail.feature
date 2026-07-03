@@ -13,7 +13,7 @@ Feature: Exercise detail
   Scenario: Editing an exercise from its detail
     Given I open the catalog
     When I open the exercise "Plancha abdominal"
-    And I tap the edit button
+    And I start editing the exercise
     Then I should see "Editar ejercicio"
 
   Scenario: A logged set shows up in the exercise's history

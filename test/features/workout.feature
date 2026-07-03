@@ -14,6 +14,6 @@ Feature: Logging a workout
 
   Scenario: Resetting the day's checklist
     Given I mark the first set complete
-    When I tap "Volver a empezar"
+    When I restart today's checklist
     And I confirm the dialog
     Then the day progress should be "00 / 15"

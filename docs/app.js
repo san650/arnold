@@ -1587,7 +1587,7 @@ const renderDashboard = (state) => {
   const cards = catalog.slice(0, 24).map((c) => {
     const history = buildExerciseHistory(state, c.name);
     return html`
-      <button class="latest-card" data-go="#/dashboard/ex/${slugify(c.displayName)}">
+      <button class="latest-card" ${dataTest('latest-card')} data-go="#/dashboard/ex/${slugify(c.displayName)}">
         <div class="latest-badge">
           <span class="latest-badge-value">${c.lastWeight?.value ?? '—'}</span>
           <span class="latest-badge-unit">${c.lastWeight?.unit ?? ''}</span>
