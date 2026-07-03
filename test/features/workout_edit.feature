@@ -40,3 +40,16 @@ Feature: Editing a routine's exercises
     When I open the editor for the first exercise
     And I change the exercise type to "time"
     Then the first series of routine "day1" should have a duration in storage
+
+  Scenario: The series count cannot go below one
+    When I open the editor for the first exercise
+    And I change the series count by -2
+    Then exercise 1 of routine "day1" should have 1 series in storage
+    And I cannot remove more series
+
+  Scenario: Changing an exercise's type cascades to every routine that uses it
+    Given I open the routine editor for "day2"
+    When I open the editor for the first exercise
+    And I change the exercise type to "time"
+    Then the first series of routine "day2" should have a duration in storage
+    And the first series of routine "day5" should have a duration in storage

@@ -26,6 +26,24 @@ When('I start editing the exercise') do
   wait_for('.drawer')
 end
 
+# Exercise detail: history range toggle ---------------------------------------
+
+When('I show the full history range') do
+  click('[data-action="detail-range"][data-detail-range="all"]')
+end
+
+Then('the full history range should be selected') do
+  ok = false
+  20.times do
+    ok = @page.eval_on_selector(
+      '[data-detail-range="all"]',
+      '(el) => el.getAttribute("aria-pressed") === "true"',
+    )
+    ok ? break : sleep(0.1)
+  end
+  expect(ok).to be(true), 'expected the "Todo" range to be selected'
+end
+
 # Create / rename / delete (catalog edit mode) --------------------------------
 
 When('I create the exercise {string}') do |name|

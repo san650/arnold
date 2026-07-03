@@ -22,3 +22,11 @@ Feature: Exercise detail
     When I open the catalog
     And I open the exercise "Press de banca con barra"
     Then I should see "Día 01"
+
+  Scenario: Switching the history range to all time
+    Given I open the routine "Tren Superior (Empuje)"
+    And I mark the first set complete
+    When I open the catalog
+    And I open the exercise "Press de banca con barra"
+    And I show the full history range
+    Then the full history range should be selected

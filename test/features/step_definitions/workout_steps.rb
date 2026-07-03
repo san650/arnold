@@ -69,6 +69,14 @@ When('I change the series count by {int}') do |delta|
   delta.abs.times { click(%([data-action="series-step"][data-series-step="#{step}"])) }
 end
 
+Then('I cannot remove more series') do
+  disabled = @page.eval_on_selector(
+    '[data-action="series-step"][data-series-step="-1"]',
+    '(el) => !!el.disabled',
+  )
+  expect(disabled).to be(true)
+end
+
 When('I change the exercise type to {string}') do |kind|
   @page.select_option('[data-update][name="kind"]', value: kind)
 end

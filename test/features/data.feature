@@ -21,3 +21,26 @@ Feature: Backing up and restoring data
     Given I open the app
     When I export the configuration
     Then a file named like "arnold-" should download
+
+  Scenario: Exporting includes every routine
+    Given I open the app
+    When I export the configuration
+    Then the exported file should contain 7 routines
+
+  Scenario Outline: Importing a bad file shows an error and changes nothing
+    Given I open the app
+    When I import the file "<file>"
+    Then the dialog should mention "Archivo inválido"
+
+    Examples:
+      | file         |
+      | broken.json  |
+      | invalid.json |
+
+  Scenario: Importing clears the undo history
+    Given I open the routine "Tren Superior (Empuje)"
+    And I mark the first set complete
+    When I import the file "two_routines.json"
+    And I confirm the dialog
+    Then there should be 2 routines in storage
+    And I cannot undo

@@ -34,6 +34,11 @@ Then('I cannot redo') do
   expect(disabled).to be(true)
 end
 
+Then('I cannot undo') do
+  disabled = @page.eval_on_selector('[data-action="undo"]', '(el) => !!el.disabled')
+  expect(disabled).to be(true)
+end
+
 When('I confirm the dialog') do
   wait_for('.modal-wrap')
   click('.modal-wrap button[data-modal-action="confirm"]')
