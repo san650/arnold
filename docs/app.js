@@ -1343,7 +1343,9 @@ const renderDrawer = (routine, ex) => {
   const kind = exKind(ex);
   const series = exSeries(ex);
   const unit = exUnit(ex);
-  const re = `data-routine="${routine.id}" data-exercise="${ex.id}"`;
+  // Safe markup with the ids escaped — never raw string interpolation, since
+  // imported docs historically controlled these ids.
+  const re = html`data-routine="${routine.id}" data-exercise="${ex.id}"`;
   return html`
     <div class="drawer-backdrop" data-action="close-drawer"></div>
     <aside class="drawer" ${dataTest('editor-drawer')} role="dialog" aria-modal="true" aria-label="Editar ejercicio">
@@ -1357,12 +1359,12 @@ const renderDrawer = (routine, ex) => {
       <div class="drawer-body">
         <div class="field">
           <label>Nombre</label>
-          <input type="text" data-update name="name" value="${ex.name}" ${raw(re)} />
+          <input type="text" data-update name="name" value="${ex.name}" ${re} />
         </div>
         <div class="field-2col">
           <div class="field">
             <label>Tipo</label>
-            <select data-update name="kind" ${raw(re)}>
+            <select data-update name="kind" ${re}>
               <option value="reps" ${exKind(ex) === 'reps' ? 'selected' : ''}>Repeticiones</option>
               <option value="time" ${exKind(ex) === 'time' ? 'selected' : ''}>Tiempo (cardio)</option>
             </select>
@@ -1376,23 +1378,23 @@ const renderDrawer = (routine, ex) => {
           <label>Series</label>
           <div class="series-stepper" role="group" aria-label="Cantidad de series">
             <button type="button" class="step-btn" data-action="series-step" data-series-step="-1"
-                    ${raw(re)} aria-label="Quitar una serie" ${series.length <= 1 ? 'disabled' : ''}>−</button>
+                    ${re} aria-label="Quitar una serie" ${series.length <= 1 ? 'disabled' : ''}>−</button>
             <span class="step-count" aria-live="polite">${series.length}</span>
             <button type="button" class="step-btn" data-action="series-step" data-series-step="1"
-                    ${raw(re)} aria-label="Agregar una serie" ${series.length >= 20 ? 'disabled' : ''}>+</button>
+                    ${re} aria-label="Agregar una serie" ${series.length >= 20 ? 'disabled' : ''}>+</button>
           </div>
         </div>
         ${kind === 'time' ? html`
         <div class="field">
           <label>Duración</label>
-          <input type="text" data-update name="duration" value="${seriesDuration(series)}" ${raw(re)}
+          <input type="text" data-update name="duration" value="${seriesDuration(series)}" ${re}
                  placeholder="30-60 seg" />
         </div>
         ` : html`
         <div class="field">
           <div class="series-weights-head">
             <label>Peso × reps por serie</label>
-            <select class="unit-select" data-update name="unit" ${raw(re)}>
+            <select class="unit-select" data-update name="unit" ${re}>
               <option value="kg" ${unit === 'kg' ? 'selected' : ''}>kg</option>
               <option value="lb" ${unit === 'lb' ? 'selected' : ''}>lb</option>
             </select>
@@ -1403,14 +1405,14 @@ const renderDrawer = (routine, ex) => {
                 <span class="series-row-num">${i + 1}</span>
                 <div class="series-input-wrap">
                   <input type="number" inputmode="decimal" step="0.5" class="series-weight-input"
-                         data-update name="series-weight" data-set-index="${i}" ${raw(re)}
+                         data-update name="series-weight" data-set-index="${i}" ${re}
                          value="${s.weight ?? ''}" placeholder="—" aria-label="Peso serie ${i + 1}" />
                   <span class="series-input-unit">${unit}</span>
                 </div>
                 <span class="series-row-x" aria-hidden="true">×</span>
                 <div class="series-input-wrap">
                   <input type="number" inputmode="numeric" step="1" min="0" class="series-reps-input"
-                         data-update name="series-reps" data-set-index="${i}" ${raw(re)}
+                         data-update name="series-reps" data-set-index="${i}" ${re}
                          value="${s.reps ?? ''}" placeholder="—" aria-label="Reps serie ${i + 1}" />
                   <span class="series-input-unit">reps</span>
                 </div>
@@ -1420,12 +1422,12 @@ const renderDrawer = (routine, ex) => {
         `}
         <div class="field">
           <label>Imagen o video (URL)</label>
-          <input type="text" data-update name="video" value="${ex.video ?? ''}" ${raw(re)}
+          <input type="text" data-update name="video" value="${ex.video ?? ''}" ${re}
                  placeholder="https://youtu.be/... o https://.../foto.jpg" />
         </div>
         <div class="field">
           <label>Notas</label>
-          <input type="text" data-update name="notes" value="${ex.notes ?? ''}" ${raw(re)} />
+          <input type="text" data-update name="notes" value="${ex.notes ?? ''}" ${re} />
         </div>
         <div class="bottom-action">
           <button class="primary" data-action="close-drawer">Listo</button>
