@@ -236,7 +236,8 @@ const requestCacheVersion = async () => {
       channel.port1.onmessage = (e) => resolve(e.data?.version || '');
       sw.postMessage({ type: 'GET_VERSION' }, [channel.port2]);
     });
-    const tag = v.replace(/^.*-(v\d+)$/, '$1');
+    // The SW posts the bare VERSION tag ('v21'); tolerate a full cache name too.
+    const tag = v.match(/v\d+$/)?.[0] ?? v;
     if (tag && tag !== ui.cacheVersion) {
       ui.cacheVersion = tag;
       if (ui.menuOpen) render(store.state);
@@ -789,6 +790,9 @@ const dayNum = (i) => String(i + 1).padStart(2, '0');
 
 // Daily motivational quotes. Loaded from /quotes.json, cached in IndexedDB.
 // Cache invalidates when the file's raw text differs from the cached copy.
+// Note: the service worker answers ./quotes.json cache-first, so the
+// "network" fetch below really reads the SW precache — quotes only change
+// alongside a service-worker version bump, which re-precaches the file.
 let quotesCache = [];
 
 const refreshQuotesFromNetwork = async () => {
