@@ -120,6 +120,19 @@ export const COMMANDS = {
     },
   },
 
+  // Insert several references at once (the build picker's "Agregar N") so the
+  // whole batch is a single undo step instead of N presses.
+  ADD_EXERCISES: {
+    apply: (s, p) => {
+      const r = findRoutine(s, p.routineId);
+      r.exercises.splice(p.index, 0, ...p.exercises.map((e) => structuredClone(e)));
+    },
+    revert: (s, p) => {
+      const r = findRoutine(s, p.routineId);
+      r.exercises.splice(p.index, p.exercises.length);
+    },
+  },
+
   REMOVE_EXERCISE: {
     apply: (s, p) => {
       const r = findRoutine(s, p.routineId);

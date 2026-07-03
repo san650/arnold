@@ -929,6 +929,10 @@ const describeCommand = (cmd, state) => {
       return `Editaste ${p.to?.name ?? 'un ejercicio'}`;
     case 'ADD_EXERCISE':
       return `Agregaste ${refName(state, p.exercise)}`;
+    case 'ADD_EXERCISES':
+      return p.exercises.length === 1
+        ? `Agregaste ${refName(state, p.exercises[0])}`
+        : `Agregaste ${p.exercises.length} ejercicios`;
     case 'REMOVE_EXERCISE':
       return `Eliminaste ${refName(state, p.exercise)}`;
     case 'RENAME_ROUTINE':
@@ -2632,13 +2636,14 @@ const buildPickCommit = () => {
   if (route.name !== 'build') return;
   const routine = store.state.doc.routines[Math.min(route.step, store.state.doc.routines.length - 1)];
   if (!routine || ui.buildPickSelected.size === 0) return;
-  // Insert one reference per ticked catalog entry, in catalog order.
+  // Insert one reference per ticked catalog entry, in catalog order, as a
+  // single batch command so the whole pick is one undo step.
   const cat = buildCatalog(store.state).filter((c) => c.catalogId && ui.buildPickSelected.has(c.catalogId));
-  for (const c of cat) {
-    store.dispatch(makeCommand('ADD_EXERCISE', {
-      routineId: routine.id, index: routine.exercises.length, exercise: instanceFromCatalog(c),
-    }));
-  }
+  store.dispatch(makeCommand('ADD_EXERCISES', {
+    routineId: routine.id,
+    index: routine.exercises.length,
+    exercises: cat.map((c) => instanceFromCatalog(c)),
+  }));
   const n = ui.buildPickSelected.size;
   ui.buildPickOpen = false;
   ui.buildPickSelected.clear();
