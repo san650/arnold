@@ -12,8 +12,11 @@
 #
 source 'https://rubygems.org'
 
-gem 'cucumber'               # BDD Test Runner
-gem 'playwright-ruby-client' # Playwright API Client for Ruby
+gem 'cucumber'                          # BDD Test Runner
+# Pinned: must match PW_VERSION in run.rb and the version keys in
+# .github/workflows/test.yml — an unpinned `bundle update` would silently
+# drift the client away from the server it connects to.
+gem 'playwright-ruby-client', '1.60.0'  # Playwright API Client for Ruby
 gem 'rspec-expectations'     # For assertions
 gem 'webrick'                # Static server for the docs/ app under test
 gem 'websocket-driver'       # Required to connect to the Playwright browser server

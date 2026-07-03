@@ -82,7 +82,7 @@ PLATFORMS
 
 DEPENDENCIES
   cucumber
-  playwright-ruby-client
+  playwright-ruby-client (= 1.60.0)
   rspec-expectations
   webrick
   websocket-driver

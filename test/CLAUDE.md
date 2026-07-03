@@ -106,5 +106,6 @@ ruby run.rb --tags @catalog          # one tag group
 ## Version sync
 
 Playwright is pinned in three places that must move together on any bump:
-`PW_VERSION` in `run.rb`, the `playwright-ruby-client` gem in `Gemfile`, and the
-two `1.60.0` cache keys + install steps in `.github/workflows/test.yml`.
+`PW_VERSION` in `run.rb`, the `playwright-ruby-client` version pin in `Gemfile`
+(then `bundle install` to refresh the lockfile), and the `1.60.0` cache keys +
+install steps in `.github/workflows/test.yml`.
