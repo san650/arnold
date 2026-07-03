@@ -64,18 +64,27 @@ self.addEventListener('fetch', (event) => {
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
-  event.respondWith(
-    caches.match(req).then((cached) => {
-      if (cached) return cached;
-      return fetch(req).then((res) => {
-        // Gate on a successful same-origin response so a 404/5xx/opaque
-        // response never poisons the cache for future requests.
-        if (res.ok && res.type === 'basic') {
-          const copy = res.clone();
-          caches.open(CACHE).then((c) => c.put(req, copy)).catch(() => {});
-        }
-        return res;
-      }).catch(() => cached);
-    })
-  );
+  event.respondWith((async () => {
+    // Navigations must match the precached shell regardless of query string
+    // ('/?utm=…' would otherwise miss './' and die offline).
+    const cached = await caches.match(req, { ignoreSearch: req.mode === 'navigate' });
+    if (cached) return cached;
+    try {
+      const res = await fetch(req);
+      // Gate on a successful same-origin response so a 404/5xx/opaque
+      // response never poisons the cache for future requests.
+      if (res.ok && res.type === 'basic') {
+        const copy = res.clone();
+        caches.open(CACHE).then((c) => c.put(req, copy)).catch(() => {});
+      }
+      return res;
+    } catch (err) {
+      // Offline navigation to an un-precached URL still gets the app shell.
+      if (req.mode === 'navigate') {
+        const shell = await caches.match('./index.html');
+        if (shell) return shell;
+      }
+      throw err;
+    }
+  })());
 });
