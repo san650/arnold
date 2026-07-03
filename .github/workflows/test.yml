@@ -5,12 +5,18 @@ on:
     branches: [main]
   pull_request:
 
+# Superseded pushes to the same branch/PR cancel the older run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # The service worker serves the shell cache-first with no revalidation:
   # shipping a docs/ change without bumping VERSION in sw.js strands every
   # existing install on the old shell forever. Fail fast instead.
   sw-version:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
         with:
@@ -45,6 +51,9 @@ jobs:
 
   cucumber:
     runs-on: ubuntu-latest
+    # Generous for a ~10s suite; mainly a backstop against a wedged npx or
+    # browser download so a hang can't burn the 6-hour default.
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: test
@@ -87,3 +96,13 @@ jobs:
 
       - name: Run e2e suite
         run: ruby run.rb
+
+      # The After hook drops a screenshot per failed scenario in
+      # test/tmp/screenshots — without this a red run is a bare 'F'.
+      - name: Upload failure screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-screenshots
+          path: test/tmp/screenshots/
+          if-no-files-found: ignore

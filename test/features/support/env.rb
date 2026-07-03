@@ -13,6 +13,7 @@ require 'rspec/expectations'
 require 'playwright'
 require 'webrick'
 require 'socket'
+require 'fileutils'
 
 # ---------------------------------------------------------------------------
 # Static server over docs/ (the deployable app), on a free port.
@@ -253,6 +254,19 @@ Before do
   @page = @context.new_page
 end
 
-After do
+# On failure, keep a screenshot in tmp/screenshots (uploaded as a CI artifact)
+# — otherwise a red run reports a bare 'F' with nothing to debug from.
+SCREENSHOT_DIR = File.expand_path('../../tmp/screenshots', __dir__)
+
+After do |scenario|
+  if scenario.failed? && @page
+    begin
+      FileUtils.mkdir_p(SCREENSHOT_DIR)
+      slug = scenario.name.downcase.gsub(/[^a-z0-9]+/, '-').slice(0, 60)
+      @page.screenshot(path: File.join(SCREENSHOT_DIR, "#{slug}.png"))
+    rescue StandardError => e
+      warn "screenshot failed: #{e.class}: #{e.message}"
+    end
+  end
   @context&.close
 end
