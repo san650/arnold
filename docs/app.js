@@ -1284,7 +1284,7 @@ const renderWorkout = (state, routineId, editExerciseId, editMode = false) => {
               : (open ? 'Video' : 'Ver video');
             // Embed only mounts when open — no iframe / <img> network hit
             // until the user opens the panel.
-            const body = open ? html`<div class="media-content">${renderMedia(media)}</div>` : '';
+            const body = open ? html`<div class="media-content">${renderMedia(media, ex.name)}</div>` : '';
             video = html`
               <div class="media-panel${open ? ' open' : ''}">
                 <button class="media-toggle"
@@ -1389,13 +1389,14 @@ const renderWorkout = (state, routineId, editExerciseId, editMode = false) => {
   `;
 };
 
-const renderMedia = (media) => {
+const renderMedia = (media, label = '') => {
   if (media.kind === 'youtube') {
     const cls = media.short ? 'media-wrap short' : 'media-wrap';
-    return html`<div class="${cls}"><iframe src="https://www.youtube.com/embed/${media.id}" title="YouTube" allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen loading="lazy"></iframe></div>`;
+    return html`<div class="${cls}"><iframe src="https://www.youtube.com/embed/${media.id}" title="${label || 'YouTube'}" allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen loading="lazy"></iframe></div>`;
   }
   if (media.kind === 'image') {
-    return html`<div class="media-wrap"><img src="${media.url}" alt="" loading="lazy" /></div>`;
+    // Content, not decoration: the image demonstrates the exercise's form.
+    return html`<div class="media-wrap"><img src="${media.url}" alt="${label}" loading="lazy" /></div>`;
   }
   return '';
 };
