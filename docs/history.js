@@ -23,17 +23,27 @@ export class History {
   record(cmd) {
     const stamped = { ...cmd, t: Date.now() };
     const last = this.past[this.past.length - 1];
+    // Coalesce only commands that opt in (coalesceKeyOf ≠ null); their
+    // payloads are exactly ids + from/to, so the merge below is sound.
+    const key = coalesceKeyOf(cmd);
     if (
       last &&
-      last.type === cmd.type &&
-      coalesceKeyOf(last) === coalesceKeyOf(cmd) &&
+      key !== null &&
+      coalesceKeyOf(last) === key &&
       stamped.t - last.t < COALESCE_WINDOW_MS
     ) {
-      this.past[this.past.length - 1] = {
+      const merged = {
         ...last,
         payload: { ...last.payload, to: cmd.payload.to },
         t: stamped.t,
       };
+      // A merge that lands back on its starting value is a no-op — drop the
+      // entry instead of leaving a dead undo step.
+      if (JSON.stringify(merged.payload.from) === JSON.stringify(merged.payload.to)) {
+        this.past.pop();
+      } else {
+        this.past[this.past.length - 1] = merged;
+      }
     } else {
       this.past.push(stamped);
       if (this.past.length > MAX_ENTRIES) this.past.shift();

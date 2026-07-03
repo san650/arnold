@@ -1,6 +1,13 @@
 // Every state mutation is a Command with apply/revert. The store funnels
 // all writes through dispatch(), enabling undo, redo, and replay from one
 // chokepoint. Payloads must carry both `from` and `to` so revert is exact.
+//
+// `coalesceKey` opts a command into history coalescing (rapid same-key
+// commands merge into one undo step via `{ ...first.payload, to: last.to }`).
+// That merge is only sound when the payload is exactly ids + `from`/`to` —
+// commands with extra revert state (snapshots, reshapes) or whose effects
+// don't compose that way (splice-based moves, adds/removes) must NOT define
+// one; each dispatch is then its own undo step.
 
 const ensureSession = (state, date) => {
   if (!state.doc.sessions[date]) state.doc.sessions[date] = {};
@@ -42,7 +49,9 @@ export const COMMANDS = {
       if (p.fromSnapshot !== undefined) entry.snapshot = p.fromSnapshot ? structuredClone(p.fromSnapshot) : null;
       sess[p.exerciseId] = entry;
     },
-    coalesceKey: (p) => `${p.date}:${p.exerciseId}:${p.setIndex}`,
+    // No coalescing: the payload carries snapshot/fromSnapshot, which the
+    // merge would drop (making a snapshot overwrite un-undoable), and an
+    // on/off double-tap would strand a from===to dead entry.
   },
 
   CLEAR_SETS: {
@@ -52,7 +61,6 @@ export const COMMANDS = {
     revert: (s, p) => {
       s.doc.sessions[p.date] = structuredClone(p.from) || {};
     },
-    coalesceKey: (p) => `clear:${p.date}`,
   },
 
   // Per-instance training params: swap one routine reference's `series`
@@ -96,7 +104,9 @@ export const COMMANDS = {
         if (e) e.series = structuredClone(t.from);
       }
     },
-    coalesceKey: (p) => `cat-entry:${p.catalogId}`,
+    // A payload carrying `reshape` (kind change) must stay its own undo step —
+    // the coalesce merge would drop the reshape and break revert.
+    coalesceKey: (p) => (p.reshape ? null : `cat-entry:${p.catalogId}`),
   },
 
   ADD_EXERCISE: {
@@ -108,7 +118,6 @@ export const COMMANDS = {
       const r = findRoutine(s, p.routineId);
       r.exercises.splice(p.index, 1);
     },
-    coalesceKey: (p) => `add-ex:${p.routineId}:${p.exercise.id}`,
   },
 
   REMOVE_EXERCISE: {
@@ -120,7 +129,6 @@ export const COMMANDS = {
       const r = findRoutine(s, p.routineId);
       r.exercises.splice(p.index, 0, structuredClone(p.exercise));
     },
-    coalesceKey: (p) => `rm-ex:${p.routineId}:${p.exercise.id}`,
   },
 
   RENAME_ROUTINE: {
@@ -142,7 +150,6 @@ export const COMMANDS = {
     revert: (s, p) => {
       s.doc.routines.splice(p.index, 1);
     },
-    coalesceKey: (p) => `add-r:${p.routine.id}`,
   },
 
   REMOVE_ROUTINE: {
@@ -152,7 +159,6 @@ export const COMMANDS = {
     revert: (s, p) => {
       s.doc.routines.splice(p.index, 0, structuredClone(p.routine));
     },
-    coalesceKey: (p) => `rm-r:${p.routine.id}`,
   },
 
   // Add a standalone exercise definition to the catalog. Catalog entries hold
@@ -167,7 +173,6 @@ export const COMMANDS = {
       if (!Array.isArray(s.doc.catalog)) return;
       s.doc.catalog.splice(p.index, 1);
     },
-    coalesceKey: (p) => `add-cat:${p.exercise.id}`,
   },
 
   // Delete a catalog entry and cascade-remove every routine reference to it.
@@ -213,7 +218,6 @@ export const COMMANDS = {
         s.doc.catalog.splice(p.catalogTarget.index, 0, structuredClone(p.catalogTarget.exercise));
       }
     },
-    coalesceKey: (p) => `cat-del:${p.name}`,
   },
 
   MOVE_ROUTINE: {
@@ -225,8 +229,7 @@ export const COMMANDS = {
       const [moved] = s.doc.routines.splice(p.to, 1);
       s.doc.routines.splice(p.from, 0, moved);
     },
-    // Each move is its own undo step (no coalescing across rapid taps).
-    coalesceKey: () => 'move',
+    // No coalescing: splice-based moves don't compose as {first.from, last.to}.
   },
 
   MOVE_EXERCISE: {
@@ -240,14 +243,18 @@ export const COMMANDS = {
       const [moved] = r.exercises.splice(p.to, 1);
       r.exercises.splice(p.from, 0, moved);
     },
-    coalesceKey: (p) => `move-ex:${p.routineId}`,
+    // No coalescing: splice-based moves don't compose as {first.from, last.to}.
   },
 };
 
 export const makeCommand = (type, payload) => ({ type, payload });
 
-export const coalesceKeyOf = (cmd) =>
-  `${cmd.type}:${COMMANDS[cmd.type].coalesceKey(cmd.payload)}`;
+// Coalesce identity of a command, or null when the command (or this
+// particular payload) must not coalesce.
+export const coalesceKeyOf = (cmd) => {
+  const key = COMMANDS[cmd.type].coalesceKey?.(cmd.payload);
+  return key == null ? null : `${cmd.type}:${key}`;
+};
 
 // Only meaningful for commands with primitive from/to. Object payloads
 // always pass through (caller should pre-check equality if it matters).
