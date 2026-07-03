@@ -67,12 +67,17 @@ Run a group with the smoke profile (`ruby run.rb -p smoke`) or an ad-hoc tag
 ## Assertions — prefer storage
 
 Assert the **persisted outcome** by reading IndexedDB through `app_doc` /
-`wait_doc`, not just visible text. Persistence is async after a dispatch, so poll
-with `wait_doc` and guard against a nil doc:
+`wait_doc`, not just visible text. Persistence is async after a dispatch, so
+poll with `wait_doc`:
 
 ```ruby
-doc = wait_doc { |d| d && d['routines'].length == n }
+doc = wait_doc { |d| d['routines'].length == n }
 ```
+
+`wait_doc` is nil-safe (the doc is nil until the first write commits — nil docs
+and predicate crashes count as "not yet") and **raises on timeout** with the
+last-seen doc, so the predicate should express exactly the condition the step
+asserts.
 
 Note: the app only **writes to storage on the first mutation**. A pure no-op
 (e.g. a *cancelled* delete) leaves storage empty — assert the on-screen list in

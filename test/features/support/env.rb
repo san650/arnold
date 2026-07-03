@@ -217,17 +217,30 @@ module AppWorld
     @page.mouse.up
   end
 
-  # Persistence is async after a dispatch — poll the doc until `block` holds
-  # (or timeout), returning the last-read doc for the assertion to inspect.
+  # Persistence is async after a dispatch — poll the doc until `block` holds,
+  # returning the doc that satisfied it. The doc is nil until the app's first
+  # write commits (and a click-then-poll can race that window), so nil docs and
+  # predicate crashes both count as "not yet" instead of erroring the step.
+  # On timeout, raise with the last-seen doc — handing a wrong doc back to the
+  # assertion just produces a confusing nil crash one line later.
   def wait_doc(timeout: 5)
+    raise ArgumentError, 'wait_doc requires a block' unless block_given?
     deadline = Time.now + timeout
-    last = app_doc
-    until block_given? && yield(last)
-      break if Time.now > deadline
-      sleep 0.1
+    last = nil
+    loop do
       last = app_doc
+      ok = begin
+        last && yield(last)
+      rescue NoMethodError, TypeError
+        false
+      end
+      return last if ok
+      if Time.now > deadline
+        raise "wait_doc: condition not met within #{timeout}s " \
+              "(last doc: #{last.nil? ? 'nil' : last.to_json[0, 300]})"
+      end
+      sleep 0.1
     end
-    last
   end
 end
 
