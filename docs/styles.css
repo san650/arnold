@@ -2214,3 +2214,16 @@ button.danger-primary:active { background: #d33b3b; }
   box-shadow: 0 -12px 30px -22px rgba(0, 0, 0, 0.95);
 }
 .build-pick-foot button { width: 100%; padding: 0.85rem; }
+
+/* ---------- Boot-failure recovery screen ---------- */
+/* Rendered with static DOM when the boot render throws (see renderRecovery);
+   deliberately self-contained and boring. */
+
+.boot-error {
+  max-width: var(--col);
+  margin: 30vh auto 0;
+  padding: 0 1rem;
+  text-align: center;
+}
+.boot-error h2 { font-family: var(--display); letter-spacing: -0.02em; margin: 0 0 0.5rem; }
+.boot-error p { color: var(--muted); margin: 0 0 1.25rem; }

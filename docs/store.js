@@ -14,10 +14,18 @@ class Store {
   }
 
   async #hydrate() {
-    const persisted = await loadState();
-    if (persisted) {
-      if (persisted.state) this.state = persisted.state;
-      if (persisted.history) this.history.hydrate(persisted.history);
+    try {
+      const persisted = await loadState();
+      if (persisted) {
+        if (persisted.state) this.state = persisted.state;
+        if (persisted.history) this.history.hydrate(persisted.history);
+      }
+    } catch (err) {
+      // Unreadable storage (private mode, eviction, corruption) must not
+      // reject store.ready and blank the app — boot from the seed instead.
+      console.error('hydrate failed', err);
+      this.state = initialState();
+      this.history.clear();
     }
     requestPersistence();
   }

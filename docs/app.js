@@ -3083,11 +3083,37 @@ const onKeyDown = (e) => {
 
 // ---------- boot ----------
 
+// Last-resort screen when the boot render throws (e.g. state persisted by an
+// older/newer version that this code can't read). Without it the app is a
+// permanently blank screen — the broken state re-crashes every launch and the
+// in-app reset is unreachable. Static DOM, no innerHTML: it must not depend
+// on the very render path that just failed.
+const renderRecovery = (err) => {
+  console.error('boot render failed', err);
+  root.textContent = '';
+  const wrap = document.createElement('div');
+  wrap.className = 'boot-error';
+  const h = document.createElement('h2');
+  h.textContent = 'Algo salió mal';
+  const p = document.createElement('p');
+  p.textContent = 'No se pudo mostrar la aplicación con los datos guardados. Podés restaurar el programa original para volver a empezar.';
+  const btn = document.createElement('button');
+  btn.className = 'danger-primary';
+  btn.textContent = 'Restaurar rutina inicial';
+  btn.onclick = () => { store.reset(); location.hash = '#/'; location.reload(); };
+  wrap.append(h, p, btn);
+  root.appendChild(wrap);
+};
+
 const start = async () => {
   await store.ready;
-  // Hydrate quotes from IDB cache (instant) and refresh from network in
-  // the background. If the cache is empty this awaits the network fetch.
-  await initQuotes();
+  // Quotes hydrate from the IDB cache and refresh from network in the
+  // background — they must never gate the first render (a slow first fetch
+  // would hold the whole app hostage). Re-render only if the user is already
+  // staring at the motivation screen when they arrive.
+  initQuotes().then(() => {
+    if (parseRoute().name === 'motivation') render(store.state);
+  });
   store.subscribe(() => render(store.state));
   window.addEventListener('hashchange', () => {
     resetTransient();
@@ -3098,7 +3124,11 @@ const start = async () => {
   delegateById('input', inputActions);
   delegateById('submit', submitActions);
   window.addEventListener('keydown', onKeyDown);
-  render(store.state);
+  try {
+    render(store.state);
+  } catch (err) {
+    renderRecovery(err);
+  }
 };
 
 start();
