@@ -193,6 +193,10 @@ const confirmModal = ({ title, message, confirmLabel = 'Confirmar', cancelLabel 
     const frag = range.createContextualFragment(String(markup));
     wrap.appendChild(frag);
     document.body.appendChild(wrap);
+    // Move focus into the dialog (and back afterwards) so keyboard users
+    // aren't left interacting with the obscured page behind the backdrop.
+    const opener = document.activeElement;
+    wrap.querySelector('[data-modal-action="confirm"]')?.focus();
     let resolved = false;
     const onKey = (e) => { if (e.key === 'Escape') close(false); };
     const close = (result) => {
@@ -200,6 +204,7 @@ const confirmModal = ({ title, message, confirmLabel = 'Confirmar', cancelLabel 
       resolved = true;
       document.removeEventListener('keydown', onKey);
       wrap.remove();
+      if (opener?.isConnected) opener.focus({ preventScroll: true });
       resolve(result);
     };
     wrap.addEventListener('click', (e) => {
@@ -2240,6 +2245,7 @@ const render = (state) => {
   const buildDrawerOpen = route.name === 'build' && (!!route.editExerciseId || ui.buildPickOpen);
   const drawerOpen = (route.name === 'workout' && !!route.editExerciseId) || ui.menuOpen || ui.newRoutineOpen || ui.catalogFormOpen || stopwatchOpen || exerciseEditDrawerOpen || buildDrawerOpen;
   const suppressDrawerAnim = drawerOpen && ui.lastDrawerOpen;
+  const drawerJustOpened = drawerOpen && !ui.lastDrawerOpen;
 
   const routeKey = JSON.stringify(route);
   const sameRoute = routeKey === ui.lastRouteKey;
@@ -2307,6 +2313,16 @@ const render = (state) => {
         try { input.setSelectionRange(input.value.length, input.value.length); } catch {}
       });
     }
+  }
+  // Move focus into any other newly opened drawer (menu, editor, …) so
+  // keyboard/AT users land inside the dialog they opened. Runs after the
+  // form-drawer blocks above; skips if one of them already claimed focus.
+  if (drawerJustOpened) {
+    requestAnimationFrame(() => {
+      const drawer = root.querySelector('.drawer');
+      if (!drawer || drawer.contains(document.activeElement)) return;
+      drawer.querySelector(FOCUSABLE)?.focus({ preventScroll: true });
+    });
   }
 
   // Wire drag-to-reorder on any list flagged with data-reorder-list. The
@@ -3115,6 +3131,32 @@ const submitActions = {
   },
 };
 
+// Keyboard support for the modal layers. Drawers and the confirm modal carry
+// aria-modal="true", which promises AT the background is inert — honor it for
+// keyboard users too: Escape closes the top drawer (via the same action its
+// backdrop uses) and Tab cycles inside the top-most layer instead of walking
+// into obscured content.
+const FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+const onLayerKeydown = (e) => {
+  if (e.key === 'Escape' && !document.querySelector('.modal-wrap')) {
+    const bd = root.querySelector('.drawer-backdrop');
+    if (bd) { e.preventDefault(); runAction(bd, e); }
+    return;
+  }
+  if (e.key !== 'Tab') return;
+  const layer = document.querySelector('.modal-wrap .modal-dialog') ?? root.querySelector('.drawer');
+  if (!layer) return;
+  const items = [...layer.querySelectorAll(FOCUSABLE)]
+    .filter((el) => !el.disabled && el.offsetParent !== null);
+  if (!items.length) return;
+  const first = items[0];
+  const last = items[items.length - 1];
+  const active = document.activeElement;
+  if (!layer.contains(active)) { e.preventDefault(); first.focus(); return; }
+  if (e.shiftKey && active === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && active === last) { e.preventDefault(); first.focus(); }
+};
+
 const isEditableTarget = (e) => {
   const t = e.target;
   return t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
@@ -3178,6 +3220,7 @@ const start = async () => {
   delegateById('input', inputActions);
   delegateById('submit', submitActions);
   window.addEventListener('keydown', onKeyDown);
+  window.addEventListener('keydown', onLayerKeydown);
   try {
     render(store.state);
   } catch (err) {
