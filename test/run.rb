@@ -20,30 +20,50 @@ HERE = __dir__
 
 puts "▶ starting Playwright #{PW_VERSION} browser server…"
 # The config pins the server to IPv4 127.0.0.1 (the Ruby client can't resolve a
-# bracketed IPv6 `[::1]` endpoint).
+# bracketed IPv6 `[::1]` endpoint). pgroup: the npx wrapper spawns the real
+# node server, which spawns Chromium — teardown must signal the whole group or
+# the grandchildren survive the run as orphans.
 config = File.join(HERE, 'launch-server.json')
 stdin, stdout, wait_thr = Open3.popen2e(
-  'npx', '-y', "playwright@#{PW_VERSION}", 'launch-server', '--browser', 'chromium', '--config', config
+  'npx', '-y', "playwright@#{PW_VERSION}", 'launch-server', '--browser', 'chromium', '--config', config,
+  pgroup: true
 )
 stdin.close
 
 at_exit do
-  Process.kill('TERM', wait_thr.pid) rescue nil
-  wait_thr.join rescue nil
-end
-
-# launch-server prints its ws endpoint (ws://host:port/<guid>) on the first line.
-endpoint = nil
-deadline = Time.now + 30
-while Time.now < deadline
-  line = stdout.gets
-  break if line.nil?
-  if line =~ %r{(ws://\S+)}
-    endpoint = Regexp.last_match(1).strip
-    break
+  pgid = begin
+    Process.getpgid(wait_thr.pid)
+  rescue Errno::ESRCH
+    nil
+  end
+  if pgid
+    Process.kill('-TERM', pgid) rescue nil
+    unless wait_thr.join(5)
+      Process.kill('-KILL', pgid) rescue nil
+      wait_thr.join rescue nil
+    end
   end
 end
-abort('✗ Playwright server did not print a ws endpoint') unless endpoint
+
+# launch-server prints its ws endpoint (ws://host:port/<guid>) on its first
+# output line. Read with IO.select so a wedged npx (bad cache, stalled
+# download) hits the 30s deadline instead of blocking in gets forever.
+endpoint = nil
+deadline = Time.now + 30
+buf = +''
+while Time.now < deadline && endpoint.nil?
+  ready = IO.select([stdout], nil, nil, deadline - Time.now)
+  break unless ready
+  begin
+    buf << stdout.read_nonblock(4096)
+  rescue IO::WaitReadable
+    next
+  rescue EOFError
+    break
+  end
+  endpoint = Regexp.last_match(1).strip if buf =~ %r{(ws://\S+)}
+end
+abort('✗ Playwright server did not print a ws endpoint within 30s') unless endpoint
 
 # Drain remaining server output in the background so it never blocks.
 Thread.new { stdout.each_line { |_l| } }
