@@ -917,7 +917,7 @@ const describeCommand = (cmd, state) => {
   switch (cmd.type) {
     case 'TOGGLE_SET': {
       const found = findExerciseInState(state, p.exerciseId);
-      const name = found?.exercise.name ?? 'un ejercicio';
+      const name = refName(state, found?.exercise);
       const verb = p.to ? 'Marcaste' : 'Desmarcaste';
       return `${verb} la serie ${p.setIndex + 1} de ${name}`;
     }
@@ -2609,7 +2609,7 @@ const removeExercise = async (t) => {
   const exercise = r.exercises[index];
   const ok = await confirmModal({
     title: 'Eliminar ejercicio',
-    message: `Se va a quitar "${exercise.name}" de la rutina.`,
+    message: `Se va a quitar "${refName(store.state, exercise)}" de la rutina.`,
     confirmLabel: 'Eliminar',
     cancelLabel: 'Cancelar',
     destructive: true,
