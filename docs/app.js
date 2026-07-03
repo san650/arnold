@@ -194,9 +194,11 @@ const confirmModal = ({ title, message, confirmLabel = 'Confirmar', cancelLabel 
     wrap.appendChild(frag);
     document.body.appendChild(wrap);
     let resolved = false;
+    const onKey = (e) => { if (e.key === 'Escape') close(false); };
     const close = (result) => {
       if (resolved) return;
       resolved = true;
+      document.removeEventListener('keydown', onKey);
       wrap.remove();
       resolve(result);
     };
@@ -205,9 +207,7 @@ const confirmModal = ({ title, message, confirmLabel = 'Confirmar', cancelLabel 
       if (!t) return;
       close(t.dataset.modalAction === 'confirm');
     });
-    document.addEventListener('keydown', function onKey(e) {
-      if (e.key === 'Escape') { document.removeEventListener('keydown', onKey); close(false); }
-    });
+    document.addEventListener('keydown', onKey);
   });
 };
 
