@@ -1601,7 +1601,7 @@ const renderBarChart = (rows, kind) => {
 
   const allValues = [...byDay.values()].flat();
   if (allValues.length === 0) {
-    return `<div class="detail-chart-empty">Todavía no hay ${kind === 'time' ? 'tiempos' : 'registros'} en los últimos 30 días.</div>`;
+    return html`<div class="detail-chart-empty">Todavía no hay ${kind === 'time' ? 'tiempos' : 'registros'} en los últimos 30 días.</div>`;
   }
   const max = Math.max(...allValues, 1);
   // reps → volume (kg·reps, shown unitless); time → no unit either.
