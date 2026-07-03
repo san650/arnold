@@ -2997,11 +2997,7 @@ const changeActions = {
     const kind = hydrateExercise(store.state, inst).kind;
     const from = structuredClone(Array.isArray(inst.series) ? inst.series : []);
     let to = structuredClone(from);
-    if (field === 'series-count') {
-      const n = Math.max(1, Math.min(20, Number(t.value) || 1));
-      t.value = n;
-      to = resizeSeries(to, n, kind);
-    } else if (field === 'duration') {
+    if (field === 'duration') {
       // One duration string applies to every set of a time exercise.
       const n = Math.max(1, to.length || 1);
       to = Array.from({ length: n }, () => ({ duration: t.value }));
