@@ -2330,6 +2330,124 @@ const render = (state) => {
 
 // ---------- Export / Import ----------
 
+// Rebuild a trustworthy document from arbitrary imported JSON. The render and
+// dispatch paths assume the normalized model (routines with an `exercises`
+// array, `[\w-]` ids, series shaped for the entry's kind), and replaceDoc
+// persists before the first render — so a malformed file must never get
+// through, or it crashes every subsequent launch. Ids are also interpolated
+// into data attributes, so unsafe ones are regenerated (consistently, to keep
+// references and session history linked). Legacy exports with inline exercise
+// definitions (no catalogId) get a catalog entry synthesized by name.
+// Returns null when the input isn't a plausible export.
+const SAFE_ID = /^[\w-]+$/;
+const DATE_KEY = /^\d{4}-\d{2}-\d{2}$/;
+const sanitizeImportedDoc = (data) => {
+  if (!data || typeof data !== 'object' || !Array.isArray(data.routines)) return null;
+
+  // Per-collection id rewriting: keep safe unique ids, regenerate the rest,
+  // and remember the mapping so references follow.
+  const takeId = (v, used, map) => {
+    const orig = typeof v === 'string' ? v : null;
+    if (orig && map.has(orig)) return map.get(orig);
+    let id = orig && SAFE_ID.test(orig) && !used.has(orig) ? orig : uid();
+    while (used.has(id)) id = uid();
+    used.add(id);
+    if (orig) map.set(orig, id);
+    return id;
+  };
+  const catIds = new Set(), catIdMap = new Map();
+  const instIds = new Set(), instIdMap = new Map();
+  const routineIds = new Set(), routineIdMap = new Map();
+
+  const catalog = [];
+  const catalogByName = new Map(); // normalized name -> entry (unique by name)
+  const addCatalogEntry = (c) => {
+    const name = String(c.name).trim();
+    const key = normalizeName(name);
+    const existing = catalogByName.get(key);
+    if (existing) {
+      // Duplicate name: keep the first entry, point this id at it.
+      if (typeof c.id === 'string') catIdMap.set(c.id, existing.id);
+      return existing;
+    }
+    const def = {
+      id: takeId(c.id, catIds, catIdMap),
+      name,
+      category: typeof c.category === 'string' && VALID_CATEGORY.has(c.category) ? c.category : null,
+      kind: c.kind === 'time' ? 'time' : 'reps',
+      video: typeof c.video === 'string' && c.video.trim() ? c.video.trim() : null,
+      notes: typeof c.notes === 'string' ? c.notes : '',
+      unit: c.unit === 'lb' ? 'lb' : 'kg',
+    };
+    catalog.push(def);
+    catalogByName.set(key, def);
+    return def;
+  };
+  for (const c of (Array.isArray(data.catalog) ? data.catalog : [])) {
+    if (c && typeof c === 'object' && typeof c.name === 'string' && c.name.trim()) addCatalogEntry(c);
+  }
+
+  const routines = data.routines
+    .filter((r) => r && typeof r === 'object')
+    .map((r) => ({
+      id: takeId(r.id, routineIds, routineIdMap),
+      name: typeof r.name === 'string' && r.name.trim() ? r.name.trim() : 'Rutina',
+      exercises: (Array.isArray(r.exercises) ? r.exercises : [])
+        .filter((e) => e && typeof e === 'object')
+        .map((e) => {
+          let catalogId = typeof e.catalogId === 'string' ? (catIdMap.get(e.catalogId) ?? null) : null;
+          // Legacy inline exercise: synthesize/reuse a catalog entry by name.
+          if (!catalogId && typeof e.name === 'string' && e.name.trim()) {
+            catalogId = addCatalogEntry(e).id;
+          }
+          if (!catalogId) return null; // unusable reference — drop it
+          const kind = catalog.find((c) => c.id === catalogId)?.kind ?? 'reps';
+          const series = reshapeSeries(
+            Array.isArray(e.series) ? e.series.filter((s) => s && typeof s === 'object') : [],
+            kind,
+          );
+          return { id: takeId(e.id, instIds, instIdMap), catalogId, series };
+        })
+        .filter(Boolean),
+    }));
+
+  // Sessions are historical records keyed by date -> instance id. Follow the
+  // instance-id rewrites so history stays attached; snapshots are normalized
+  // to the shape the dashboard reads.
+  const sessions = {};
+  if (data.sessions && typeof data.sessions === 'object' && !Array.isArray(data.sessions)) {
+    for (const [date, day] of Object.entries(data.sessions)) {
+      if (!DATE_KEY.test(date) || !day || typeof day !== 'object' || Array.isArray(day)) continue;
+      const out = {};
+      for (const [exId, entry] of Object.entries(day)) {
+        const key = instIdMap.get(exId) ?? (SAFE_ID.test(exId) ? exId : null);
+        if (!key) continue;
+        const sets = Array.isArray(entry?.sets) ? entry.sets.map(Boolean)
+          : Array.isArray(entry) ? entry.map(Boolean) : [];
+        const rawSnap = entry?.snapshot;
+        const snapshot = rawSnap && typeof rawSnap === 'object' && typeof rawSnap.name === 'string'
+          ? {
+              name: rawSnap.name,
+              kind: rawSnap.kind === 'time' ? 'time' : 'reps',
+              unit: rawSnap.unit === 'lb' ? 'lb' : 'kg',
+              series: reshapeSeries(
+                Array.isArray(rawSnap.series) ? rawSnap.series.filter((s) => s && typeof s === 'object') : [],
+                rawSnap.kind === 'time' ? 'time' : 'reps',
+              ),
+              routineId: typeof rawSnap.routineId === 'string'
+                ? (routineIdMap.get(rawSnap.routineId) ?? (SAFE_ID.test(rawSnap.routineId) ? rawSnap.routineId : null))
+                : null,
+            }
+          : null;
+        out[key] = { sets, snapshot };
+      }
+      if (Object.keys(out).length) sessions[date] = out;
+    }
+  }
+
+  return { routines, catalog, sessions };
+};
+
 const exportConfig = async () => {
   const data = JSON.stringify(store.state.doc, null, 2);
   const filename = `arnold-${new Date().toISOString().slice(0, 10)}.json`;
@@ -2394,7 +2512,8 @@ const importConfig = async () => {
     return;
   }
 
-  if (!data || typeof data !== 'object' || !Array.isArray(data.routines)) {
+  const doc = sanitizeImportedDoc(data);
+  if (!doc) {
     await confirmModal({
       title: 'Archivo inválido',
       message: 'El JSON no tiene la estructura esperada (falta el campo "routines").',
@@ -2406,17 +2525,14 @@ const importConfig = async () => {
 
   const ok = await confirmModal({
     title: 'Reemplazar configuración',
-    message: `Vas a sustituir tus ${store.state.doc.routines.length} rutinas y todas las sesiones por las del archivo (${data.routines.length} rutinas). Esta acción no se puede deshacer.`,
+    message: `Vas a sustituir tus ${store.state.doc.routines.length} rutinas y todas las sesiones por las del archivo (${doc.routines.length} rutinas). Esta acción no se puede deshacer.`,
     confirmLabel: 'Reemplazar',
     cancelLabel: 'Cancelar',
     destructive: true,
   });
   if (!ok) return;
 
-  // Ensure sessions exists so the store doesn't break later.
-  if (!data.sessions || typeof data.sessions !== 'object') data.sessions = {};
-
-  store.replaceDoc(data);
+  store.replaceDoc(doc);
   go('#/');
   showToast('Configuración importada');
 };
