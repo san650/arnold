@@ -82,13 +82,15 @@ self.addEventListener('fetch', (event) => {
         caches.open(CACHE).then((c) => c.put(req, copy)).catch(() => {});
       }
       return res;
-    } catch (err) {
-      // Offline navigation to an un-precached URL still gets the app shell.
+    } catch {
+      // Offline navigation to an un-precached URL still gets the app shell;
+      // everything else gets a real network-error Response (respondWith must
+      // never resolve with undefined or reject with a bare error).
       if (req.mode === 'navigate') {
         const shell = await caches.match('./index.html');
         if (shell) return shell;
       }
-      throw err;
+      return Response.error();
     }
   })());
 });
