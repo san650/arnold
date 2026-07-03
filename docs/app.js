@@ -166,7 +166,30 @@ const attachReorder = (container, onReorder) => {
     if (from !== to && from >= 0 && to >= 0) onReorder(from, to);
   };
 
+  // Keyboard path: the drag handle is a real button, so ArrowUp/ArrowDown on
+  // it moves the row one slot — pointer drag is not the only way to reorder.
+  const onKeyDown = (e) => {
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+    const handle = e.target.closest('[data-drag-handle]');
+    if (!handle) return;
+    const row = handle.closest('[data-reorder-index]');
+    if (!row) return;
+    const all = [...container.querySelectorAll('[data-reorder-index]')];
+    const from = all.indexOf(row);
+    const to = e.key === 'ArrowUp' ? from - 1 : from + 1;
+    if (from < 0 || to < 0 || to >= all.length) return;
+    e.preventDefault();
+    onReorder(from, to);
+    // The dispatch re-rendered the list; put focus back on the moved row's
+    // handle so repeated presses keep working.
+    requestAnimationFrame(() => {
+      root.querySelector(`[data-reorder-list] [data-reorder-index="${to}"] [data-drag-handle]`)
+        ?.focus({ preventScroll: true });
+    });
+  };
+
   container.addEventListener('pointerdown', onPointerDown);
+  container.addEventListener('keydown', onKeyDown);
 };
 
 // Tap the title to open the daily motivation screen.
