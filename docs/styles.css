@@ -7,7 +7,7 @@
   --fg: #f5efe5;
   --fg-dim: #c5c8cc;
   --muted: #8d96a4;
-  --muted-2: #6c7585;
+  --muted-2: #7f8899; /* ≥4.5:1 on the elevated surface — it labels real text */
   --accent: #ff6b1a;
   --accent-hi: #ff7f3a;
   --accent-dim: rgba(255, 107, 26, 0.16);
@@ -178,6 +178,13 @@ input:focus, select:focus, textarea:focus {
   outline: 0;
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-ring);
+}
+/* Keyboard focus: custom button styling plus the transparent tap-highlight
+   strips the UA outline inconsistently — restore an explicit ring for
+   keyboard users only (:focus-visible), leaving taps clean. */
+button:focus-visible, a:focus-visible, [tabindex]:focus-visible {
+  outline: 2px solid var(--accent-hi);
+  outline-offset: 2px;
 }
 ::placeholder { color: var(--muted-2); }
 
