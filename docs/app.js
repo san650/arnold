@@ -2747,7 +2747,7 @@ const clickActions = {
   },
   'series-step': seriesStep,
   'detail-range': (t) => {
-    const r = t.dataset.ui.detailRange;
+    const r = t.dataset.detailRange;
     if (r !== ui.detailRange) { ui.detailRange = r; render(store.state); }
   },
   'delete-catalog': deleteCatalog,
