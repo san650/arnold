@@ -247,15 +247,41 @@ const requestCacheVersion = async () => {
 requestCacheVersion();
 
 // Auto-reload once when the SW activates a new shell (single-reload updates).
+// Committed data is safe in IndexedDB, but a reload mid-edit would eat text
+// that hasn't fired `change` yet or an open drawer/modal — so defer until
+// it's safe, retrying when the user navigates or leaves the page.
 let reloadingForUpdate = false;
+let pendingUpdateReload = false;
+const reloadIsSafe = () =>
+  !document.body.hasAttribute('data-drawer-open') &&
+  !document.querySelector('.modal-wrap') &&
+  !(document.activeElement && (
+    document.activeElement.tagName === 'INPUT' ||
+    document.activeElement.tagName === 'TEXTAREA' ||
+    document.activeElement.isContentEditable
+  ));
+const tryUpdateReload = (force = false) => {
+  if (reloadingForUpdate) return;
+  if (force || reloadIsSafe()) {
+    reloadingForUpdate = true;
+    location.reload();
+  } else {
+    pendingUpdateReload = true;
+  }
+};
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.addEventListener('message', (e) => {
-    if (e.data?.type === 'RELOAD' && !reloadingForUpdate) {
-      reloadingForUpdate = true;
-      location.reload();
-    }
+    if (e.data?.type === 'RELOAD') tryUpdateReload();
   });
 }
+// Once hidden, the reload is invisible (and un-blurred input is lost either
+// way) — force it. On in-app navigation, retry only if now safe.
+document.addEventListener('visibilitychange', () => {
+  if (pendingUpdateReload && document.visibilityState === 'hidden') tryUpdateReload(true);
+});
+window.addEventListener('hashchange', () => {
+  if (pendingUpdateReload) tryUpdateReload();
+});
 // Transient: in-workout stopwatch overlay. Each open starts from zero;
 // tick interval drives a single DOM text node (no store dispatches).
 let stopwatchOpen = false;
