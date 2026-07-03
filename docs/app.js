@@ -1768,9 +1768,9 @@ const renderExerciseDetail = (state, slug, editMode, origin = 'dashboard') => {
 
     <div class="section">
       <span class="label">Progreso</span>
-      <div class="range-toggle" role="tablist">
-        <button class="range-opt ${ui.detailRange === '30d' ? 'on' : ''}" data-action="detail-range" data-detail-range="30d" role="tab" aria-selected="${ui.detailRange === '30d'}">30 días</button>
-        <button class="range-opt ${ui.detailRange === 'all' ? 'on' : ''}" data-action="detail-range" data-detail-range="all" role="tab" aria-selected="${ui.detailRange === 'all'}">Todo</button>
+      <div class="range-toggle" role="group" aria-label="Rango del historial">
+        <button class="range-opt ${ui.detailRange === '30d' ? 'on' : ''}" data-action="detail-range" data-detail-range="30d" aria-pressed="${ui.detailRange === '30d'}">30 días</button>
+        <button class="range-opt ${ui.detailRange === 'all' ? 'on' : ''}" data-action="detail-range" data-detail-range="all" aria-pressed="${ui.detailRange === 'all'}">Todo</button>
       </div>
     </div>
     <div class="detail-chart-wrap" ${dataTest('exercise-detail')}>${renderBarChart(all, detailKind)}</div>
