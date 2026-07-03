@@ -2488,11 +2488,15 @@ const importConfig = async () => {
 
   const file = await new Promise((resolve) => {
     let resolved = false;
-    input.addEventListener('change', () => { resolved = true; resolve(input.files?.[0] || null); }, { once: true });
-    // If the user dismisses the picker without selecting a file there's no
-    // event — resolve with null after focus returns and no change fired.
+    const settle = (v) => { if (!resolved) { resolved = true; resolve(v); } };
+    input.addEventListener('change', () => settle(input.files?.[0] || null), { once: true });
+    // Modern browsers fire 'cancel' when the picker is dismissed.
+    input.addEventListener('cancel', () => settle(null), { once: true });
+    // Fallback for browsers without 'cancel': resolve null once focus returns
+    // — generously, since a slow picker (iOS Files) can deliver `change` well
+    // after refocus and settling early would silently drop a real selection.
     window.addEventListener('focus', () => {
-      setTimeout(() => { if (!resolved) resolve(null); }, 350);
+      setTimeout(() => settle(null), 1500);
     }, { once: true });
     input.click();
   });
