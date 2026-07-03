@@ -1,0 +1,89 @@
+name: e2e
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # The service worker serves the shell cache-first with no revalidation:
+  # shipping a docs/ change without bumping VERSION in sw.js strands every
+  # existing install on the old shell forever. Fail fast instead.
+  sw-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require a sw.js VERSION bump when docs/ changes
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            RANGE="origin/$BASE_REF...HEAD"
+          elif [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ] && git cat-file -e "$BEFORE_SHA" 2>/dev/null; then
+            RANGE="$BEFORE_SHA..$HEAD_SHA"
+          else
+            echo "No usable base commit — skipping check."
+            exit 0
+          fi
+          CHANGED=$(git diff --name-only "$RANGE" -- docs/)
+          if [ -z "$CHANGED" ]; then
+            echo "No docs/ changes — nothing to check."
+            exit 0
+          fi
+          if git diff "$RANGE" -- docs/sw.js | grep -q "^+const VERSION"; then
+            echo "docs/ changed and sw.js VERSION was bumped — OK."
+          else
+            echo "::error file=docs/sw.js::docs/ changed but sw.js VERSION was not bumped — installed clients would never receive this deploy."
+            echo "Changed files:"; echo "$CHANGED"
+            exit 1
+          fi
+
+  cucumber:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true          # caches gems, keyed on test/Gemfile.lock
+          working-directory: test
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # Cache the playwright npm package `npx` downloads.
+      - name: Cache npm download
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-playwright-1.60.0
+
+      # Cache the Chromium binary. On a hit, the installer skips the download
+      # and we only pull the apt system libs (next step).
+      - name: Cache Playwright browser
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-1.60.0
+
+      - name: Install Playwright browser and system deps
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        run: npx -y playwright@1.60.0 install --with-deps chromium
+
+      - name: Install Playwright system deps
+        if: steps.pw-cache.outputs.cache-hit == 'true'
+        run: npx -y playwright@1.60.0 install-deps chromium
+
+      - name: Run e2e suite
+        run: ruby run.rb
