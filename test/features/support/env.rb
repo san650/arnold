@@ -199,18 +199,25 @@ module AppWorld
     end
   end
 
-  # Drive the app's pointer-based drag-sort: press the drag handle of the row at
-  # `from`, move past the target row's midpoint, and release. Works on any
+  # Drive the app's pointer-based drag-sort: press the drag handle of the row
+  # at `from`, move past the target slot's midpoint, and release. Works on any
   # [data-reorder-list]; rows are [data-reorder-index="N"].
+  #
+  # The app (attachReorder) tests slots against `target.top + dragged.height/2`
+  # — the DRAGGED row's height, not the target's — so compute the landing
+  # point the same way or mixed-height rows silently no-op the drop.
   def reorder(list_selector, from, to)
+    row    = @page.query_selector(%(#{list_selector} [data-reorder-index="#{from}"]))
     handle = @page.query_selector(%(#{list_selector} [data-reorder-index="#{from}"] [data-drag-handle]))
     target = @page.query_selector(%(#{list_selector} [data-reorder-index="#{to}"]))
+    handle.scroll_into_view_if_needed
     hb = handle.bounding_box
+    rb = row.bounding_box
     tb = target.bounding_box
     sx = hb['x'] + hb['width'] / 2
     sy = hb['y'] + hb['height'] / 2
-    # Land past the target's midpoint so the handler picks the new slot.
-    ty = to > from ? tb['y'] + tb['height'] * 0.75 : tb['y'] + tb['height'] * 0.25
+    mid = tb['y'] + rb['height'] / 2
+    ty = to > from ? mid + 6 : mid - 6
     @page.mouse.move(sx, sy)
     @page.mouse.down
     @page.mouse.move(sx, (sy + ty) / 2, steps: 5)
