@@ -13,6 +13,11 @@ Feature: Progress dashboard
     And I should see "Actividad"
     And I should see "Press de banca con barra"
 
+  Scenario: The activity calendar shows a Monday-to-Sunday week
+    When I open the progress screen
+    Then the activity calendar should show the days of the week
+    And today should be marked in the activity calendar
+
   Scenario: A latest-exercise card opens its detail
     When I open the progress screen
     And I open the exercise "Press de banca con barra"

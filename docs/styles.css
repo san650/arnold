@@ -1466,26 +1466,64 @@ button.danger-primary:active { background: #d33b3b; }
 
 .heatmap {
   display: grid;
-  grid-auto-flow: column;
-  grid-template-rows: repeat(7, 1fr);
-  gap: 3px;
-  padding: 0.875rem 0.5rem 0.5rem;
+  /* Left gutter for month labels + one column per weekday (Lu..Do). One grid
+     row per calendar week, in DOM order — no auto-flow tricks. */
+  grid-template-columns: auto repeat(7, 1fr);
+  gap: 4px;
+  align-items: stretch;
+  padding: 0.75rem 0.75rem 0.75rem 0.625rem;
   background: linear-gradient(180deg, var(--bg-elev) 0%, rgba(26, 29, 36, 0.6) 100%);
   border: 1px solid var(--line);
   border-radius: var(--radius);
   margin-bottom: 0.625rem;
 }
+.heatmap-dow {
+  align-self: end;
+  padding-bottom: 0.2rem;
+  text-align: center;
+  font-family: var(--body);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.heatmap-gutter {
+  display: flex;
+  align-items: center;
+  min-width: 1.75rem;
+  padding-right: 0.25rem;
+  font-family: var(--body);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
 .heatmap-cell {
   aspect-ratio: 1 / 1;
-  border-radius: 2px;
+  border-radius: 5px;
+  display: grid;
+  place-items: center;
   background: var(--bg-elev-2);
   border: 1px solid rgba(58, 65, 80, 0.4);
+}
+.heatmap-cell .d {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.66rem;
+  color: var(--muted);
 }
 .heatmap-cell.lvl-0 { background: rgba(44, 49, 59, 0.55); border-color: rgba(58, 65, 80, 0.3); }
 .heatmap-cell.lvl-1 { background: rgba(255, 107, 26, 0.22); border-color: rgba(255, 107, 26, 0.35); }
 .heatmap-cell.lvl-2 { background: rgba(255, 107, 26, 0.42); border-color: rgba(255, 107, 26, 0.55); }
 .heatmap-cell.lvl-3 { background: rgba(255, 107, 26, 0.68); border-color: rgba(255, 127, 58, 0.7); }
 .heatmap-cell.lvl-4 { background: var(--accent); border-color: var(--accent-hi); box-shadow: 0 0 0 1px rgba(255, 127, 58, 0.35) inset; }
+.heatmap-cell.lvl-1 .d,
+.heatmap-cell.lvl-2 .d { color: var(--accent-hi); }
+.heatmap-cell.lvl-3 .d,
+.heatmap-cell.lvl-4 .d { color: #16100a; font-weight: 700; }
+.heatmap-cell.today { box-shadow: 0 0 0 1.5px var(--accent-hi); }
 .heatmap-cell.future { opacity: 0.25; }
 
 .heatmap-legend {
@@ -1695,12 +1733,22 @@ button.danger-primary:active { background: #d33b3b; }
   letter-spacing: 0.04em;
   min-width: 3.5rem;
 }
-.session-routine {
-  font-family: var(--body);
-  font-size: 0.82rem;
-  font-weight: 600;
+.session-volume {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.3rem;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.78rem;
   color: var(--fg-dim);
-  letter-spacing: 0;
+}
+.session-volume .k {
+  font-family: var(--body);
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
 }
 .session-weight {
   font-family: var(--display);

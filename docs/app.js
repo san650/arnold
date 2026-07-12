@@ -1265,12 +1265,12 @@ const renderWorkout = (state, routineId, editExerciseId, editMode = false) => {
                   </button>`;
         });
 
-        // reps → weight list + total volume; time → duration.
+        // reps → weight list; time → duration. Total volume is a metrics-only
+        // number — it lives in the exercise detail screen, not here.
         const wLabel = fmtSeriesWeights(series, unit);
-        const vol = seriesVolume(series);
         const statChips = kind === 'time'
           ? html`<span class="stat-chip"><span class="k">Duración</span> ${seriesDuration(series) || '—'}</span>`
-          : html`${wLabel ? html`<span class="stat-chip weight"><span class="k">Peso</span> ${wLabel}</span>` : ''}${vol ? html`<span class="stat-chip"><span class="k">Volumen</span> ${vol}</span>` : ''}`;
+          : (wLabel ? html`<span class="stat-chip weight"><span class="k">Peso</span> ${wLabel}</span>` : '');
 
         const media = parseMedia(safeUrl(ex.video));
         let video = '';
@@ -1502,11 +1502,14 @@ const renderDrawer = (routine, ex) => {
 
 // ---------- Dashboard ----------
 
-const HEATMAP_WEEKS = 14;
+const HEATMAP_WEEKS = 8;
+const HEATMAP_DOW = ['Lu', 'Ma', 'Mi', 'Ju', 'Vi', 'Sa', 'Do'];
 
-// Build a 7×HEATMAP_WEEKS grid (rows = weekday, cols = week) of cells
-// ending at the current week (Monday-start). Each cell has a date key and
-// an intensity level 0..4 based on sets done that day.
+// Activity calendar: a Monday–Sunday week per row, oldest week on top and the
+// current week at the bottom. Each square is one day (its day-of-month shown
+// inside) shaded 0..4 by sets done; the left gutter marks month changes and
+// today gets a ring. Rendered in plain reading order — one row per week — so
+// the DOM order and the visual order are the same thing.
 const renderHeatmap = (state) => {
   const activity = dayActivityMap(state);
   const maxIntensity = Math.max(1, ...activity.values());
@@ -1514,18 +1517,23 @@ const renderHeatmap = (state) => {
   // Anchor to Monday of the current week (Lunes-start to feel European).
   const dow = (today.getDay() + 6) % 7;
   const monday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - dow);
+  const keyOf = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const todayKey = keyOf(today);
 
-  const cells = [];
-  // Render row-major so reading order matches: row=weekday (Mon..Sun),
-  // col=week (oldest..current). The grid uses CSS to flip to columns.
-  for (let row = 0; row < 7; row++) {
-    for (let col = 0; col < HEATMAP_WEEKS; col++) {
-      const offsetDays = -((HEATMAP_WEEKS - 1 - col) * 7) + row;
-      const d = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + offsetDays);
-      const y = d.getFullYear();
-      const m = String(d.getMonth() + 1).padStart(2, '0');
-      const day = String(d.getDate()).padStart(2, '0');
-      const key = `${y}-${m}-${day}`;
+  // Header row: an empty gutter cell, then the weekday initials.
+  const cells = [
+    html`<div class="heatmap-gutter"></div>`,
+    ...HEATMAP_DOW.map((d) => html`<div class="heatmap-dow">${d}</div>`),
+  ];
+  let prevMonth = -1;
+  for (let w = HEATMAP_WEEKS - 1; w >= 0; w--) {
+    const weekMonday = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() - w * 7);
+    const monthLabel = weekMonday.getMonth() !== prevMonth ? MONTHS_ES_SHORT[weekMonday.getMonth()] : '';
+    prevMonth = weekMonday.getMonth();
+    cells.push(html`<div class="heatmap-gutter">${monthLabel}</div>`);
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(weekMonday.getFullYear(), weekMonday.getMonth(), weekMonday.getDate() + i);
+      const key = keyOf(d);
       const n = activity.get(key) ?? 0;
       let lvl = 0;
       if (n > 0) {
@@ -1533,13 +1541,13 @@ const renderHeatmap = (state) => {
         lvl = ratio > 0.75 ? 4 : ratio > 0.5 ? 3 : ratio > 0.25 ? 2 : 1;
       }
       const future = d > today;
-      cells.push(html`<div class="heatmap-cell lvl-${lvl}${future ? ' future' : ''}"
-        data-date="${key}" title="${key} · ${n} series"></div>`);
+      cells.push(html`<div class="heatmap-cell lvl-${lvl}${future ? ' future' : ''}${key === todayKey ? ' today' : ''}"
+        data-date="${key}" title="${key} · ${n} series"><span class="d">${d.getDate()}</span></div>`);
     }
   }
 
   return html`
-    <div class="heatmap" style="grid-template-columns:repeat(${HEATMAP_WEEKS},1fr)">${cells}</div>
+    <div class="heatmap">${cells}</div>
     <div class="heatmap-legend">
       <span>menos</span>
       <div class="heatmap-cell lvl-0"></div>
@@ -1737,18 +1745,19 @@ const renderExerciseDetail = (state, slug, editMode, origin = 'dashboard') => {
   }
 
   const sessions = [...filtered].reverse();
+  // One row per session: date, weights (or duration), total volume, sets done.
+  // Which routine the session belonged to is deliberately omitted — the date is
+  // what matters when reading an exercise's history.
   const sessionItems = sessions.map((r) => {
-    const routine = r.routineId ? state.doc.routines.find((x) => x.id === r.routineId) : null;
-    const routineIdx = routine ? state.doc.routines.findIndex((x) => x.id === routine.id) : -1;
-    const routineLabel = routine ? `Día ${dayNum(routineIdx)}` : '—';
     const weightLabel = r.kind === 'time'
       ? (seriesDuration(r.series) || '—')
       : (fmtSeriesWeights(r.series, r.unit) ?? '—');
+    const vol = r.kind === 'time' ? null : seriesVolume(r.series);
     return html`
       <li class="session-row">
         <span class="session-date">${fmtShortDate(r.date)}</span>
-        <span class="session-routine">${routineLabel}</span>
         <span class="session-weight">${weightLabel}</span>
+        <span class="session-volume">${vol ? html`<span class="k">Vol</span> ${vol}` : ''}</span>
         <span class="session-sets mono">${r.setsDone}/${r.setsTotal}</span>
       </li>`;
   });
