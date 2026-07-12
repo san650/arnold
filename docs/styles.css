@@ -1466,12 +1466,14 @@ button.danger-primary:active { background: #d33b3b; }
 
 .heatmap {
   display: grid;
-  /* Left gutter for month labels + one column per weekday (Lu..Do). One grid
-     row per calendar week, in DOM order — no auto-flow tricks. */
-  grid-template-columns: auto repeat(7, 1fr);
-  gap: 4px;
+  /* One column per weekday (Lu..Do), one grid row per calendar week, in DOM
+     order — no auto-flow tricks. Month changes are full-width separator rows.
+     Tight gap + padding so each day square clears ~44px on a 390px viewport:
+     days will become tappable, so keep them fat-finger sized. */
+  grid-template-columns: repeat(7, 1fr);
+  gap: 3px;
   align-items: stretch;
-  padding: 0.75rem 0.75rem 0.75rem 0.625rem;
+  padding: 0.5rem;
   background: linear-gradient(180deg, var(--bg-elev) 0%, rgba(26, 29, 36, 0.6) 100%);
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -1488,11 +1490,12 @@ button.danger-primary:active { background: #d33b3b; }
   text-transform: uppercase;
   color: var(--muted);
 }
-.heatmap-gutter {
+.heatmap-month {
+  grid-column: 1 / -1;
   display: flex;
   align-items: center;
-  min-width: 1.75rem;
-  padding-right: 0.25rem;
+  gap: 0.5rem;
+  margin: 0.35rem 0 0.1rem;
   font-family: var(--body);
   font-size: 0.62rem;
   font-weight: 700;
@@ -1500,9 +1503,15 @@ button.danger-primary:active { background: #d33b3b; }
   text-transform: uppercase;
   color: var(--muted);
 }
+.heatmap-month::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
 .heatmap-cell {
   aspect-ratio: 1 / 1;
-  border-radius: 5px;
+  border-radius: 7px;
   display: grid;
   place-items: center;
   background: var(--bg-elev-2);
@@ -1511,7 +1520,7 @@ button.danger-primary:active { background: #d33b3b; }
 .heatmap-cell .d {
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
-  font-size: 0.66rem;
+  font-size: 0.72rem;
   color: var(--muted);
 }
 .heatmap-cell.lvl-0 { background: rgba(44, 49, 59, 0.55); border-color: rgba(58, 65, 80, 0.3); }

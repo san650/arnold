@@ -1507,9 +1507,11 @@ const HEATMAP_DOW = ['Lu', 'Ma', 'Mi', 'Ju', 'Vi', 'Sa', 'Do'];
 
 // Activity calendar: a Monday–Sunday week per row, oldest week on top and the
 // current week at the bottom. Each square is one day (its day-of-month shown
-// inside) shaded 0..4 by sets done; the left gutter marks month changes and
-// today gets a ring. Rendered in plain reading order — one row per week — so
-// the DOM order and the visual order are the same thing.
+// inside) shaded 0..4 by sets done; a full-width separator row marks month
+// changes and today gets a ring. Rendered in plain reading order — one row per
+// week — so the DOM order and the visual order are the same thing. No side
+// gutter: all seven columns share the card width so each square clears the
+// 44px tap-target minimum on a 390px viewport (days become tappable later).
 const renderHeatmap = (state) => {
   const activity = dayActivityMap(state);
   const maxIntensity = Math.max(1, ...activity.values());
@@ -1520,17 +1522,15 @@ const renderHeatmap = (state) => {
   const keyOf = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   const todayKey = keyOf(today);
 
-  // Header row: an empty gutter cell, then the weekday initials.
-  const cells = [
-    html`<div class="heatmap-gutter"></div>`,
-    ...HEATMAP_DOW.map((d) => html`<div class="heatmap-dow">${d}</div>`),
-  ];
+  // Header row: the weekday initials.
+  const cells = HEATMAP_DOW.map((d) => html`<div class="heatmap-dow">${d}</div>`);
   let prevMonth = -1;
   for (let w = HEATMAP_WEEKS - 1; w >= 0; w--) {
     const weekMonday = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() - w * 7);
-    const monthLabel = weekMonday.getMonth() !== prevMonth ? MONTHS_ES_SHORT[weekMonday.getMonth()] : '';
+    if (weekMonday.getMonth() !== prevMonth) {
+      cells.push(html`<div class="heatmap-month">${MONTHS_ES_SHORT[weekMonday.getMonth()]}</div>`);
+    }
     prevMonth = weekMonday.getMonth();
-    cells.push(html`<div class="heatmap-gutter">${monthLabel}</div>`);
     for (let i = 0; i < 7; i++) {
       const d = new Date(weekMonday.getFullYear(), weekMonday.getMonth(), weekMonday.getDate() + i);
       const key = keyOf(d);
