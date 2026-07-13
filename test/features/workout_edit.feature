@@ -6,6 +6,9 @@ Feature: Editing a routine's exercises
   Background:
     Given I open the routine editor for "day1"
 
+  Scenario: Edit mode shows every exercise collapsed
+    Then all exercises should be collapsed
+
   Scenario: Adding an exercise from the catalog
     When I add the exercise "Peso muerto con barra" to the routine
     Then routine "day1" should reference "Peso muerto con barra" in storage

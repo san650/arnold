@@ -4,6 +4,55 @@ When('I mark the first set complete') do
   @page.locator(data_test('set-toggle')).first.click
 end
 
+# Accordion ------------------------------------------------------------------
+# Only the expanded exercise renders set toggles, so `set-toggle` locators are
+# implicitly scoped to it.
+
+When('I expand exercise {int}') do |n|
+  @page.locator(data_test('exercise-card')).nth(n - 1).click
+end
+
+When('I collapse the expanded exercise') do
+  click('[data-action="collapse-exercise"]')
+end
+
+When('I complete every set of the expanded exercise') do
+  pending = %(#{data_test('set-toggle')}[data-from="0"])
+  20.times do
+    break if @page.locator(pending).count.zero?
+    @page.locator(pending).first.click
+  end
+  expect(@page.locator(pending).count).to eq(0)
+end
+
+When('I return home') do
+  click('.back-btn')
+  wait_for(data_test('routine-card'))
+end
+
+Then('exercise {int} should be expanded') do |n|
+  card = @page.locator(data_test('exercise-card')).nth(n - 1)
+  expect(card.get_attribute('aria-expanded')).to eq('true')
+end
+
+Then('exercise {int} should be collapsed') do |n|
+  card = @page.locator(data_test('exercise-card')).nth(n - 1)
+  expect(card.get_attribute('class')).to include('collapsed')
+end
+
+Then('all exercises should be collapsed') do
+  cards = @page.locator(data_test('exercise-card'))
+  expect(cards.count).to be > 0
+  cards.count.times do |i|
+    expect(cards.nth(i).get_attribute('class')).to include('collapsed')
+  end
+end
+
+Then('exercise {int} should show no sets') do |n|
+  card = @page.locator(data_test('exercise-card')).nth(n - 1)
+  expect(card.locator(data_test('set-toggle')).count).to eq(0)
+end
+
 When("I restart today's checklist") do
   click('[data-action="clear-sets"]')
 end

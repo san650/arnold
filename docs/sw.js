@@ -1,4 +1,4 @@
-const VERSION = 'v25';
+const VERSION = 'v26';
 const CACHE_NAME = 'arnold';
 const CACHE = `${CACHE_NAME}-${VERSION}`;
 

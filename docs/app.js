@@ -12,6 +12,9 @@ const UI_DEFAULTS = {
   menuOpen: false, newRoutineOpen: false, catalogFormOpen: false, catalogPickRoutineId: null,
   catalogFilter: '', catalogEditName: null, detailRange: '30d', buildPickOpen: false, buildPickFilter: '',
   catalogFormPrefill: '', // seeds the create-form name (from an empty-search "Crear …" tap)
+  // Workout accordion: undefined = not yet resolved (expand first incomplete
+  // exercise on entry), null = deliberately all collapsed, string = exercise id.
+  expandedExercise: undefined,
 };
 const ui = {
   ...UI_DEFAULTS,
@@ -1221,6 +1224,19 @@ const renderWorkout = (state, routineId, editExerciseId, editMode = false) => {
   if (!routine) return renderHome(state);
   const date = todayKey();
 
+  // Accordion entry rule: on first render after navigation (undefined) expand
+  // the first incomplete exercise; null when everything is done. The resolved
+  // value is cached in ui so set toggles don't re-run the rule mid-workout.
+  if (!editMode && ui.expandedExercise === undefined) {
+    const firstIncomplete = routine.exercises.find((inst) => {
+      const ex = hydrateExercise(state, inst);
+      const n = exSeries(ex).length;
+      const done = sessionFor(state, date, ex.id).slice(0, n).filter(Boolean).length;
+      return !(n > 0 && done === n);
+    });
+    ui.expandedExercise = firstIncomplete ? firstIncomplete.id : null;
+  }
+
   const isRestDay = /(descanso|rest)/i.test(routine.name);
   const items = routine.exercises.length === 0
     ? (isRestDay
@@ -1238,9 +1254,12 @@ const renderWorkout = (state, routineId, editExerciseId, editMode = false) => {
         const setCount = series.length;
         const unit = exUnit(ex);
         const doneCount = arr.slice(0, setCount).filter(Boolean).length;
+        const complete = doneCount === setCount && setCount > 0;
+        const expanded = !editMode && ui.expandedExercise === ex.id;
         // Each set is one tap-to-complete row: a check, "Serie N", and the
         // target (weight × reps, or duration). The whole row is the toggle.
-        const sets = series.map((s, i) => {
+        // Collapsed cards don't mount sets or media at all.
+        const sets = !expanded ? '' : series.map((s, i) => {
           const done = !!arr[i];
           let target;
           if (kind === 'time') {
@@ -1274,7 +1293,7 @@ const renderWorkout = (state, routineId, editExerciseId, editMode = false) => {
 
         const media = parseMedia(safeUrl(ex.video));
         let video = '';
-        if (media) {
+        if (expanded && media) {
           if (media.kind === 'link') {
             video = html`<a class="video-link" href="${media.url}" target="_blank" rel="noopener noreferrer">Abrir enlace</a>`;
           } else {
@@ -1302,7 +1321,6 @@ const renderWorkout = (state, routineId, editExerciseId, editMode = false) => {
         }
 
         const notes = ex.notes ? html`<p class="ex-notes">${ex.notes}</p>` : '';
-        const complete = doneCount === setCount && setCount > 0;
 
         const editActions = editMode ? html`
           <div class="ex-edit-actions">
@@ -1327,9 +1345,19 @@ const renderWorkout = (state, routineId, editExerciseId, editMode = false) => {
             </svg>
           </button>
         ` : '';
+        // Accordion tap targets: a collapsed card is one big expand button;
+        // the expanded card collapses from its header. Edit mode gets neither.
+        const cardAttrs = editMode
+          ? html` data-reorder-index="${exIndex}"`
+          : (expanded
+              ? raw(' aria-expanded="true"')
+              : html` data-action="expand-exercise" data-exercise="${ex.id}" role="button" tabindex="0" aria-expanded="false" aria-label="Expandir ${ex.name}"`);
+        const headAttrs = !editMode && expanded
+          ? raw(' data-action="collapse-exercise" role="button" tabindex="0" aria-label="Contraer ejercicio"')
+          : '';
         return html`
-          <article class="exercise ${complete ? 'complete' : ''}" ${dataTest('exercise-card')}${editMode ? html` data-reorder-index="${exIndex}"` : ''}>
-            <div class="ex-head">
+          <article class="exercise${expanded ? '' : ' collapsed'} ${complete ? 'complete' : ''}" ${dataTest('exercise-card')}${cardAttrs}>
+            <div class="ex-head"${headAttrs}>
               ${dragHandle}
               <h3>${ex.name}</h3>
               ${editActions}
@@ -1339,7 +1367,7 @@ const renderWorkout = (state, routineId, editExerciseId, editMode = false) => {
               <span class="stat-chip"><span class="k">Series</span> ${setCount}</span>
               ${statChips}
             </div>
-            <div class="sets">${sets}</div>
+            ${expanded ? html`<div class="sets">${sets}</div>` : ''}
             ${video}
           </article>
         `;
@@ -2911,6 +2939,8 @@ const clickActions = {
     else ui.expandedMedia.add(id);
     render(store.state);
   },
+  'expand-exercise': (t) => { ui.expandedExercise = t.dataset.exercise; render(store.state); },
+  'collapse-exercise': () => { ui.expandedExercise = null; render(store.state); },
   'toggle-set': toggleSet,
   'clear-sets': clearSets,
   'add-routine': () => { ui.newRoutineOpen = true; render(store.state); },
