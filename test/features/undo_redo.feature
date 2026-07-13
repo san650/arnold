@@ -21,6 +21,15 @@ Feature: Undo and redo
     When I redo
     Then the workout should have 1 completed set in storage
 
+  Scenario: Undoing a weight edit also reverts its cascade
+    Given I open the routine editor for "day1"
+    When I open the editor for the first exercise
+    And I set the weight of series 1 to "60"
+    Then every series of routine "day1" should weigh "60" in storage
+    When I finish editing the exercise
+    And I undo
+    Then series 1 of routine "day1" should have no weight in storage
+
   Scenario: A new edit clears the redo stack
     Given I open the routines editor
     When I rename the routine "day1" to "Primero"

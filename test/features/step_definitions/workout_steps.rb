@@ -64,6 +64,14 @@ When('I set the first series to {string} by {string}') do |weight, reps|
   set_field('[data-update][name="series-reps"][data-set-index="0"]', reps)
 end
 
+When('I set the weight of series {int} to {string}') do |pos, weight|
+  set_field(%([data-update][name="series-weight"][data-set-index="#{pos - 1}"]), weight)
+end
+
+When('I finish editing the exercise') do
+  click('button[data-action="close-drawer"]')
+end
+
 When('I change the series count by {int}') do |delta|
   step = delta.negative? ? '-1' : '1'
   delta.abs.times { click(%([data-action="series-step"][data-series-step="#{step}"])) }
@@ -132,6 +140,30 @@ Then('the first series of routine {string} should be {string} by {string} in sto
   s = series_at(doc, routine_id, 0)[0]
   expect(s['weight'].to_f).to eq(weight.to_f)
   expect(s['reps'].to_i).to eq(reps.to_i)
+end
+
+Then('series {int} of routine {string} should weigh {string} in storage') do |pos, routine_id, weight|
+  doc = wait_doc do |d|
+    s = (series_at(d, routine_id, 0) || [])[pos - 1]
+    s && s['weight'].to_f == weight.to_f
+  end
+  expect(series_at(doc, routine_id, 0)[pos - 1]['weight'].to_f).to eq(weight.to_f)
+end
+
+Then('series {int} of routine {string} should have no weight in storage') do |pos, routine_id|
+  doc = wait_doc do |d|
+    s = (series_at(d, routine_id, 0) || [])[pos - 1]
+    s && s['weight'].nil?
+  end
+  expect(series_at(doc, routine_id, 0)[pos - 1]['weight']).to be_nil
+end
+
+Then('every series of routine {string} should weigh {string} in storage') do |routine_id, weight|
+  doc = wait_doc do |d|
+    s = series_at(d, routine_id, 0) || []
+    !s.empty? && s.all? { |x| x['weight'].to_f == weight.to_f }
+  end
+  expect(series_at(doc, routine_id, 0).map { |x| x['weight'].to_f }.uniq).to eq([weight.to_f])
 end
 
 Then('the first series of routine {string} should have a duration in storage') do |routine_id|

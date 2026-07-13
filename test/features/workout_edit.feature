@@ -26,6 +26,25 @@ Feature: Editing a routine's exercises
     And I set the first series to "60" by "8"
     Then the first series of routine "day1" should be "60" by "8" in storage
 
+  Scenario: Entering a weight fills the empty series below
+    When I open the editor for the first exercise
+    And I set the weight of series 1 to "60"
+    Then every series of routine "day1" should weigh "60" in storage
+
+  Scenario: A cascaded weight never overwrites an entered one
+    When I open the editor for the first exercise
+    And I set the weight of series 2 to "70"
+    And I set the weight of series 1 to "60"
+    Then series 1 of routine "day1" should weigh "60" in storage
+    And series 2 of routine "day1" should weigh "70" in storage
+    And series 3 of routine "day1" should weigh "70" in storage
+
+  Scenario: The weight cascade only flows downward
+    When I open the editor for the first exercise
+    And I set the weight of series 2 to "70"
+    Then series 1 of routine "day1" should have no weight in storage
+    And series 3 of routine "day1" should weigh "70" in storage
+
   Scenario Outline: Adjusting the number of series
     When I open the editor for the first exercise
     And I change the series count by <delta>

@@ -31,7 +31,8 @@ Feature: Exercise detail
     And I mark the first set complete
     And I open the catalog
     And I open the exercise "Press de banca con barra"
-    Then I should see "480"
+    # 60×8 + the weight cascading into the two blank 10-rep sets: 480+600+600
+    Then I should see "1680"
 
   Scenario: Switching the history range to all time
     Given I open the routine "Tren Superior (Empuje)"

@@ -1474,7 +1474,7 @@ const renderDrawer = (routine, ex) => {
                 </div>
                 <span class="series-row-x" aria-hidden="true">×</span>
                 <div class="series-input-wrap">
-                  <input type="number" inputmode="numeric" step="1" min="0" class="series-reps-input"
+                  <input type="number" inputmode="decimal" step="1" min="0" class="series-reps-input"
                          data-update name="series-reps" data-set-index="${i}" ${re}
                          value="${s.reps ?? ''}" placeholder="—" aria-label="Reps serie ${i + 1}" />
                   <span class="series-input-unit">reps</span>
@@ -3087,12 +3087,20 @@ const changeActions = {
       // One duration string applies to every set of a time exercise.
       const n = Math.max(1, to.length || 1);
       to = Array.from({ length: n }, () => ({ duration: t.value }));
-    } else if (field === 'series-weight') {
+    } else if (field === 'series-weight' || field === 'series-reps') {
+      const key = field === 'series-weight' ? 'weight' : 'reps';
       const i = Number(t.dataset.setIndex);
-      if (to[i]) to[i] = { ...to[i], weight: numOrNull(t.value) };
-    } else if (field === 'series-reps') {
-      const i = Number(t.dataset.setIndex);
-      if (to[i]) to[i] = { ...to[i], reps: numOrNull(t.value) };
+      const v = numOrNull(t.value);
+      if (to[i]) {
+        to[i] = { ...to[i], [key]: v };
+        // Null-fill cascade: a committed value flows into the blanks below,
+        // never over an entered number, and never upward.
+        if (v != null) {
+          for (let j = i + 1; j < to.length; j++) {
+            if (to[j]?.[key] == null) to[j] = { ...to[j], [key]: v };
+          }
+        }
+      }
     } else {
       return;
     }

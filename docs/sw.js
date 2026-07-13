@@ -1,4 +1,4 @@
-const VERSION = 'v24';
+const VERSION = 'v25';
 const CACHE_NAME = 'arnold';
 const CACHE = `${CACHE_NAME}-${VERSION}`;
 
@@ -32,13 +32,22 @@ const SHELL = [
 ];
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(
-    caches.open(CACHE)
-      // cache: 'reload' bypasses the browser HTTP cache so a version bump
-      // never re-precaches a stale file from GitHub Pages' max-age=600.
-      .then((c) => c.addAll(SHELL.map((url) => new Request(url, { cache: 'reload' }))))
-      .then(() => self.skipWaiting())
-  );
+  event.waitUntil((async () => {
+    const cache = await caches.open(CACHE);
+    // Precache with a version query: cache:'reload' bypasses the browser HTTP
+    // cache but NOT GitHub Pages' CDN edge (max-age=600), so fetching a new
+    // sw.js right after a deploy can still fill this version's cache with the
+    // previous deploy's files. A per-version URL is a guaranteed edge miss.
+    // Store under the clean URL so runtime cache lookups keep matching.
+    await Promise.all(SHELL.map(async (url) => {
+      const res = await fetch(new Request(`${url}?swv=${VERSION}`, { cache: 'reload' }));
+      // A non-OK response must abort the install (like addAll would) rather
+      // than poison the shell cache; the browser retries the install later.
+      if (!res.ok) throw new Error(`precache failed: ${url} → ${res.status}`);
+      await cache.put(url, res);
+    }));
+    await self.skipWaiting();
+  })());
 });
 
 self.addEventListener('activate', (event) => {
