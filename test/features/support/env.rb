@@ -225,6 +225,36 @@ module AppWorld
     @page.mouse.up
   end
 
+  # Overwrite the persisted document with the seed plus a patch, so a scenario
+  # can start from a prepared training history — past days can't be produced
+  # through the UI. `js_patch` is a JS arrow function `(doc) => { … }` applied
+  # to a fresh seed clone before it is written to IndexedDB. The next
+  # navigation hydrates from it.
+  def inject_doc(js_patch)
+    open_app('')
+    @page.evaluate(<<~JS)
+      async () => {
+        const { SEED } = await import('./seed.js');
+        const doc = structuredClone(SEED);
+        (#{js_patch})(doc);
+        await new Promise((resolve, reject) => {
+          const req = indexedDB.open('arnold');
+          req.onsuccess = () => {
+            const tx = req.result.transaction('state', 'readwrite');
+            tx.objectStore('state').put({ state: { doc }, history: { past: [], future: [] } }, 'app');
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => reject(tx.error);
+          };
+          req.onerror = () => reject(req.error);
+        });
+      }
+    JS
+    # Force a document reload: a later open_app('#/…') from here is only a
+    # fragment navigation, which would keep the pre-injection in-memory state.
+    @page.reload
+    @page.wait_for_selector('.bottom-bar, .motivation', timeout: 10_000)
+  end
+
   # Persistence is async after a dispatch — poll the doc until `block` holds,
   # returning the doc that satisfied it. The doc is nil until the app's first
   # write commits (and a click-then-poll can race that window), so nil docs and

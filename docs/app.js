@@ -625,6 +625,156 @@ const buildExerciseHistory = (state, normName) => {
   return rows;
 };
 
+// ---------- Day view aggregation ----------
+
+// Uniform view of one session entry: snapshot fields when frozen, live
+// exercise fallback for entries that predate snapshots. `series`/`unit` are
+// as stored — callers convert to kg via toKg.
+const sessionRowData = (state, exId, entry) => {
+  const snap = entry?.snapshot;
+  if (snap?.name) {
+    return {
+      name: snap.name,
+      kind: snap.kind === 'time' ? 'time' : 'reps',
+      unit: snap.unit === 'lb' ? 'lb' : 'kg',
+      series: Array.isArray(snap.series) ? snap.series : [],
+      category: snap.category ?? null,
+      routineId: snap.routineId ?? null,
+    };
+  }
+  const found = findExerciseInState(state, exId);
+  if (!found) return null;
+  const hx = hydrateExercise(state, found.exercise);
+  return {
+    name: hx.name,
+    kind: exKind(hx),
+    unit: exUnit(hx),
+    series: exSeries(hx),
+    category: hx.category ?? null,
+    routineId: found.routine.id,
+  };
+};
+
+// kg volume / top weight of the *completed* sets only — the day view counts
+// what was actually lifted; the charts keep showing the full session plan.
+const doneVolume = (data, sets) => {
+  const sum = data.series.reduce((acc, s, i) => {
+    if (!sets[i]) return acc;
+    const w = numOrNull(s?.weight), r = numOrNull(s?.reps);
+    return (w != null && r != null) ? acc + toKg(w, data.unit) * r : acc;
+  }, 0);
+  return Math.round(sum * 10) / 10;
+};
+const doneTopKg = (data, sets) => {
+  const vals = data.series
+    .map((s, i) => (sets[i] ? numOrNull(s?.weight) : null))
+    .filter((v) => v != null);
+  return vals.length ? toKg(Math.max(...vals), data.unit) : null;
+};
+
+// Category chain for history rows: frozen snapshot field → catalog lookup by
+// name → keyword guess. Cosmetic only (chips); no metric depends on it.
+const rowCategory = (state, row) => {
+  if (row.category && VALID_CATEGORY.has(row.category)) return row.category;
+  const def = (state.doc.catalog || []).find((c) => normalizeName(c.name) === normalizeName(row.name));
+  return categoryOf({ displayName: row.name, template: def ?? null, kind: row.kind });
+};
+
+// Everything the day view needs in one structure. PR = the day's top
+// completed-set kg strictly beats every earlier session of the same exercise
+// name (a first-ever session beats nothing, so it is not a PR). Delta is per
+// routine group vs. the most recent earlier day that routine was trained.
+const buildDayView = (state, dateKey) => {
+  const sessions = state.doc.sessions || {};
+
+  // Chevrons: nearest trained day strictly before/after, independent of
+  // whether the viewed day itself is trained.
+  const trainedDays = [...dayActivityMap(state).keys()].sort();
+  const prevTrained = trainedDays.filter((d) => d < dateKey).pop() ?? null;
+  const nextTrained = trainedDays.find((d) => d > dateKey) ?? null;
+
+  // The viewed day's rows: exercises with at least one completed set.
+  const rows = [];
+  for (const [exId, entry] of Object.entries(sessions[dateKey] || {})) {
+    const sets = Array.isArray(entry?.sets) ? entry.sets : [];
+    if (sumDone(sets) === 0) continue;
+    const data = sessionRowData(state, exId, entry);
+    if (!data) continue;
+    rows.push({
+      ...data,
+      exId,
+      sets,
+      setsDone: sumDone(sets),
+      setsTotal: data.series.length || sets.length,
+      volume: doneVolume(data, sets),
+      topKg: doneTopKg(data, sets),
+      isPR: false,
+    });
+  }
+
+  // One sweep of all sessions: PR baselines (max earlier top kg per exercise
+  // name) and per-routine per-day volume for the delta.
+  const priorTop = new Map();
+  const routineVolByDay = new Map(); // routineId -> Map(date -> kg)
+  for (const [date, day] of Object.entries(sessions)) {
+    for (const [exId, entry] of Object.entries(day)) {
+      const sets = Array.isArray(entry?.sets) ? entry.sets : [];
+      if (sumDone(sets) === 0) continue;
+      const data = sessionRowData(state, exId, entry);
+      if (!data) continue;
+      if (date < dateKey) {
+        const key = normalizeName(data.name);
+        const top = doneTopKg(data, sets);
+        if (top != null && top > (priorTop.get(key) ?? -Infinity)) priorTop.set(key, top);
+      }
+      if (data.routineId) {
+        if (!routineVolByDay.has(data.routineId)) routineVolByDay.set(data.routineId, new Map());
+        const byDay = routineVolByDay.get(data.routineId);
+        byDay.set(date, (byDay.get(date) ?? 0) + doneVolume(data, sets));
+      }
+    }
+  }
+  for (const row of rows) {
+    const base = priorTop.get(normalizeName(row.name));
+    row.isPR = row.topKg != null && base != null && row.topKg > base;
+  }
+
+  // Group by routine, in current routine order; deleted routines after,
+  // snapshot-less legacy rows last.
+  const groupMap = new Map();
+  for (const row of rows) {
+    const key = row.routineId ?? '';
+    if (!groupMap.has(key)) groupMap.set(key, []);
+    groupMap.get(key).push(row);
+  }
+  const groups = [...groupMap.entries()].map(([key, groupRows]) => {
+    const routineId = key || null;
+    const idx = routineId ? state.doc.routines.findIndex((r) => r.id === routineId) : -1;
+    const label = idx >= 0 ? state.doc.routines[idx].name : routineId ? 'Rutina eliminada' : 'Otros';
+    const volume = Math.round(groupRows.reduce((n, r) => n + r.volume, 0) * 10) / 10;
+    let delta = null;
+    if (routineId) {
+      const byDay = routineVolByDay.get(routineId);
+      const prevDate = byDay ? [...byDay.keys()].filter((d) => d < dateKey).sort().pop() ?? null : null;
+      const prevVol = prevDate != null ? byDay.get(prevDate) : null;
+      if (prevVol) delta = { date: prevDate, pct: Math.round(((volume - prevVol) / prevVol) * 100) };
+    }
+    return { routineId, label, rows: groupRows, volume, delta, order: idx >= 0 ? idx : routineId ? 900 : 999 };
+  }).sort((a, b) => a.order - b.order);
+
+  const metrics = {
+    volume: Math.round(rows.reduce((n, r) => n + r.volume, 0) * 10) / 10,
+    setsDone: rows.reduce((n, r) => n + r.setsDone, 0),
+    setsTotal: rows.reduce((n, r) => n + r.setsTotal, 0),
+    exercises: rows.length,
+    prs: rows.filter((r) => r.isPR).length,
+  };
+  const cats = new Set(rows.map((r) => rowCategory(state, r)));
+  const muscleGroups = CATEGORY_ORDER.filter((k) => cats.has(k));
+
+  return { rows, groups, metrics, muscleGroups, prevTrained, nextTrained };
+};
+
 // Spanish short date label used across dashboard surfaces.
 const MONTHS_ES_SHORT = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
 const fmtShortDate = (dateKey) => {
@@ -665,11 +815,22 @@ const numOrNull = (v) => {
   return Number.isFinite(n) ? n : null;
 };
 
-// Total volume Σ(weight × reps). Sets missing a weight or reps contribute 0.
-const seriesVolume = (series) => (series || []).reduce((sum, s) => {
-  const w = numOrNull(s?.weight), r = numOrNull(s?.reps);
-  return (w != null && r != null) ? sum + w * r : sum;
-}, 0);
+// History metrics are canonically kg. Definitions keep their own unit; only
+// computed numbers (volume, top weight) convert. 1-decimal rounding — below
+// plate resolution, and stable enough for PR comparisons.
+const LB_IN_KG = 0.45359237;
+const toKg = (value, unit) =>
+  unit === 'lb' ? Math.round(value * LB_IN_KG * 10) / 10 : value;
+
+// Total volume Σ(weight × reps) in kg; `unit` is the series' stored unit.
+// Sets missing a weight or reps contribute 0.
+const seriesVolume = (series, unit = 'kg') => {
+  const sum = (series || []).reduce((acc, s) => {
+    const w = numOrNull(s?.weight), r = numOrNull(s?.reps);
+    return (w != null && r != null) ? acc + toKg(w, unit) * r : acc;
+  }, 0);
+  return Math.round(sum * 10) / 10;
+};
 
 // Heaviest set's weight value, or null when none is set.
 const topWeightValue = (series) => {
@@ -682,9 +843,10 @@ const repWeight = (ex) => {
   const v = topWeightValue(exSeries(ex));
   return v == null ? null : { value: v, unit: exUnit(ex) };
 };
+// Top weight of a snapshot, reported in kg (legacy lb snapshots convert).
 const snapTopWeight = (snap) => {
   const v = topWeightValue(snap?.series);
-  return v == null ? null : { value: v, unit: snap?.unit === 'lb' ? 'lb' : 'kg' };
+  return v == null ? null : { value: toKg(v, snap?.unit === 'lb' ? 'lb' : 'kg'), unit: 'kg' };
 };
 
 // Compact weight list: "60 kg" when equal, else "60·70·80 kg". null if none.
@@ -703,10 +865,11 @@ const durationLead = (str) => {
   return m ? Number(m[0]) : null;
 };
 
-// Chart/sparkline y-value for a history row: volume for reps, duration for time.
+// Chart/sparkline y-value for a history row: volume (kg) for reps, duration
+// for time. Legacy lb rows land on the same kg scale as everything else.
 const rowChartValue = (row) => row.kind === 'time'
   ? durationLead(seriesDuration(row.series))
-  : (seriesVolume(row.series) || null);
+  : (seriesVolume(row.series, row.unit) || null);
 
 // Build / resize / reshape `series` for a kind.
 const blankEntry = (kind) => (kind === 'time' ? { duration: '' } : { weight: null, reps: null });
@@ -749,7 +912,10 @@ const routeParsers = {
     if (p[1] === 'ex' && p[2]) return exerciseRoute('catalog')(p);
     return { name: 'catalog', mode: 'view' };
   },
-  dashboard: (p) => (p[1] === 'ex' && p[2]) ? exerciseRoute('dashboard')(p) : { name: 'dashboard' },
+  dashboard: (p) => {
+    if (p[1] === 'day' && p[2]) return { name: 'day', date: p[2] };
+    return (p[1] === 'ex' && p[2]) ? exerciseRoute('dashboard')(p) : { name: 'dashboard' };
+  },
   edit: () => ({ name: 'edit' }),
   log: () => ({ name: 'log' }),
   motivation: () => ({ name: 'motivation' }),
@@ -1569,8 +1735,13 @@ const renderHeatmap = (state) => {
         lvl = ratio > 0.75 ? 4 : ratio > 0.5 ? 3 : ratio > 0.25 ? 2 : 1;
       }
       const future = d > today;
-      cells.push(html`<div class="heatmap-cell lvl-${lvl}${future ? ' future' : ''}${key === todayKey ? ' today' : ''}"
-        data-date="${key}" title="${key} · ${n} series"><span class="d">${d.getDate()}</span></div>`);
+      const cls = `heatmap-cell lvl-${lvl}${key === todayKey ? ' today' : ''}`;
+      // Past/today cells are real buttons into the day view; future cells stay
+      // inert divs (nothing to show, and a dead <button> reads as broken).
+      cells.push(future
+        ? html`<div class="${cls} future" data-date="${key}"><span class="d">${d.getDate()}</span></div>`
+        : html`<button class="${cls}" ${dataTest('heatmap-day')} data-date="${key}" data-go="#/dashboard/day/${key}"
+            aria-label="${key} · ${n} ${n === 1 ? 'serie' : 'series'}"><span class="d">${d.getDate()}</span></button>`);
     }
   }
 
@@ -1667,6 +1838,103 @@ const renderDashboard = (state) => {
     </div>
     ${empty}
     <div class="latest-list">${cards}</div>
+    ${bottomBar(state)}
+  `;
+};
+
+// ---------- Day view ----------
+
+const DAYS_ES = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
+const fmtDayTitle = (dateKey) => {
+  const [y, m, d] = dateKey.split('-').map(Number);
+  return `${DAYS_ES[new Date(y, m - 1, d).getDay()]} ${d} ${MONTHS_ES_SHORT[m - 1]}`;
+};
+
+const renderDayView = (state, dateKey) => {
+  // Malformed deep link: bounce and fix the URL so a refresh doesn't re-bounce.
+  if (!DATE_KEY.test(dateKey)) {
+    history.replaceState(null, '', '#/dashboard');
+    return renderDashboard(state);
+  }
+  const dv = buildDayView(state, dateKey);
+
+  const navBtn = (target, dir) => {
+    const label = dir === 'prev' ? 'Día anterior entrenado' : 'Día siguiente entrenado';
+    const text = target ? fmtShortDate(target) : '—';
+    const inner = dir === 'prev'
+      ? html`<span class="chev" aria-hidden="true">‹</span> ${text}`
+      : html`${text} <span class="chev" aria-hidden="true">›</span>`;
+    return html`<button class="day-nav-btn" ${dataTest(`day-${dir}`)} aria-label="${label}"
+      ${target ? raw(`data-go="#/dashboard/day/${target}"`) : raw('disabled')}>${inner}</button>`;
+  };
+
+  const metricChips = html`
+    <div class="day-metrics" ${dataTest('day-metrics')}>
+      <div class="day-metric"><span class="v">${dv.metrics.volume}</span><span class="l">kg vol</span></div>
+      <div class="day-metric"><span class="v">${dv.metrics.setsDone}/${dv.metrics.setsTotal}</span><span class="l">series</span></div>
+      <div class="day-metric"><span class="v">${dv.metrics.exercises}</span><span class="l">${dv.metrics.exercises === 1 ? 'ejercicio' : 'ejercicios'}</span></div>
+      <div class="day-metric${dv.metrics.prs ? ' pr' : ''}"><span class="v">${dv.metrics.prs}</span><span class="l">PR</span></div>
+    </div>`;
+
+  const catChips = dv.muscleGroups.length === 0 ? '' : html`
+    <div class="day-cats">
+      ${dv.muscleGroups.map((k) => html`<span class="day-cat-chip" style="--cat:${CATEGORIES[k].color}">${CATEGORIES[k].label}</span>`)}
+    </div>`;
+
+  const groupBlocks = dv.groups.map((g) => {
+    const delta = g.delta
+      ? html`<span class="day-delta ${g.delta.pct >= 0 ? 'up' : 'down'}" ${dataTest('day-delta')}>vs. ${fmtShortDate(g.delta.date)} ${g.delta.pct >= 0 ? '+' : ''}${g.delta.pct}%</span>`
+      : '';
+    const exRows = g.rows.map((r) => {
+      // Weights render in kg (legacy lb snapshots convert); done state per set.
+      const setChips = r.kind === 'time'
+        ? html`<span class="day-set done">${seriesDuration(r.series) || '—'}</span>`
+        : r.series.map((s, i) => {
+            const w = numOrNull(s?.weight), reps = numOrNull(s?.reps);
+            const label = (w != null || reps != null) ? `${w != null ? toKg(w, r.unit) : '—'}×${reps ?? '—'}` : '—';
+            return html`<span class="day-set${r.sets[i] ? ' done' : ''}">${label}</span>`;
+          });
+      return html`
+        <li class="day-ex-row" ${dataTest('day-exercise')}>
+          <div class="day-ex-head">
+            <span class="day-ex-name">${r.name}</span>
+            ${r.isPR ? html`<span class="pr-badge" ${dataTest('pr-badge')}>▲ PR</span>` : ''}
+            <span class="day-ex-sets mono">${r.setsDone}/${r.setsTotal}</span>
+          </div>
+          <div class="day-sets">${setChips}</div>
+        </li>`;
+    });
+    return html`
+      <div class="day-group" ${dataTest('day-group')}>
+        <div class="section">
+          <span class="label">${g.label}</span>
+          ${delta}
+        </div>
+        <ul class="day-ex-list">${exRows}</ul>
+      </div>`;
+  });
+
+  const body = dv.rows.length === 0
+    ? html`<div class="empty-state" ${dataTest('day-rest')}>
+         <div class="empty-icon" aria-hidden="true">☾</div>
+         <p>Descanso. No completaste series este día.</p>
+       </div>`
+    : html`${metricChips}${catChips}${groupBlocks}`;
+
+  return html`
+    <header class="workout-bar">
+      ${backBtn('#/dashboard', 'Volver al progreso')}
+      <div class="title-block">
+        <div class="title">${fmtDayTitle(dateKey)}</div>
+        <div class="sub">${fmtRelDay(dateKey)}</div>
+      </div>
+      <span></span>
+    </header>
+    <div class="day-nav">
+      ${navBtn(dv.prevTrained, 'prev')}
+      ${navBtn(dv.nextTrained, 'next')}
+    </div>
+    ${body}
     ${bottomBar(state)}
   `;
 };
@@ -1780,7 +2048,7 @@ const renderExerciseDetail = (state, slug, editMode, origin = 'dashboard') => {
     const weightLabel = r.kind === 'time'
       ? (seriesDuration(r.series) || '—')
       : (fmtSeriesWeights(r.series, r.unit) ?? '—');
-    const vol = r.kind === 'time' ? null : seriesVolume(r.series);
+    const vol = r.kind === 'time' ? null : seriesVolume(r.series, r.unit);
     return html`
       <li class="session-row">
         <span class="session-date">${fmtShortDate(r.date)}</span>
@@ -2278,6 +2546,7 @@ const views = {
   log: (s) => renderLog(s),
   motivation: () => renderMotivation(),
   dashboard: (s) => renderDashboard(s),
+  day: (s, r) => renderDayView(s, r.date),
   catalog: (s, r) => renderCatalog(s, r.mode, r.routineId),
   exercise: (s, r) => renderExerciseDetail(s, r.slug, !!r.editMode, r.origin),
   build: (s, r) => renderBuild(s, r.step, r.editExerciseId),
@@ -2546,6 +2815,9 @@ const sanitizeImportedDoc = (data) => {
                 Array.isArray(rawSnap.series) ? rawSnap.series.filter((s) => s && typeof s === 'object') : [],
                 rawSnap.kind === 'time' ? 'time' : 'reps',
               ),
+              category: typeof rawSnap.category === 'string' && VALID_CATEGORY.has(rawSnap.category)
+                ? rawSnap.category
+                : null,
               routineId: typeof rawSnap.routineId === 'string'
                 ? (routineIdMap.get(rawSnap.routineId) ?? (SAFE_ID.test(rawSnap.routineId) ? rawSnap.routineId : null))
                 : null,
@@ -2702,9 +2974,17 @@ const toggleSet = (t) => {
     ? {
         name: hx.name,
         kind: exKind(hx),
-        unit: exUnit(hx),
+        // History is canonically kg: an lb definition freezes converted, so
+        // every stored snapshot compares/sums without unit math downstream.
+        unit: 'kg',
         // Full per-set breakdown — history derives weight list + volume.
-        series: structuredClone(exSeries(hx)),
+        series: exKind(hx) === 'time'
+          ? structuredClone(exSeries(hx))
+          : exSeries(hx).map((s) => {
+              const w = numOrNull(s?.weight);
+              return { weight: w == null ? null : toKg(w, exUnit(hx)), reps: numOrNull(s?.reps) };
+            }),
+        category: hx.category ?? null,
         routineId: found.routine.id,
       }
     : undefined;

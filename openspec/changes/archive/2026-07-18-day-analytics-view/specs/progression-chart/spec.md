@@ -1,12 +1,6 @@
-# progression-chart Specification
+# progression-chart Delta
 
-## Purpose
-
-Define how the progression chart and dashboard sparkline compute per-session
-values from the structured series model, using total volume for `reps`
-exercises and duration for `time` exercises.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Progression measured by total volume
 
