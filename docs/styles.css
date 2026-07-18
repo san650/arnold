@@ -1520,12 +1520,23 @@ button.danger-primary:active { background: #d33b3b; }
   background: var(--line);
 }
 .heatmap-cell {
-  aspect-ratio: 1 / 1;
+  /* Square cells via a percentage-padding spacer, NOT aspect-ratio: Safari
+     doesn't transfer aspect-ratio into auto grid row heights (WebKit bug
+     232987 lineage), so rows collapse to text height. Percentage padding
+     resolves against width in every engine. */
   border-radius: 7px;
   display: grid;
   place-items: center;
   background: var(--bg-elev-2);
   border: 1px solid rgba(58, 65, 80, 0.4);
+}
+.heatmap-cell::before {
+  content: '';
+  grid-area: 1 / 1;
+  padding-bottom: 100%;
+}
+.heatmap-cell .d {
+  grid-area: 1 / 1;
 }
 .heatmap-cell .d {
   font-family: var(--mono);
@@ -1564,6 +1575,7 @@ button.danger-primary:active { background: #d33b3b; }
   flex-shrink: 0;
   border-radius: 2px;
 }
+.heatmap-legend .heatmap-cell::before { content: none; }
 
 /* ---------- Dashboard: latest exercises ---------- */
 
